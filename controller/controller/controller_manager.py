@@ -255,15 +255,28 @@ class Controller(Node):
 
         # get wheelbase
         if self.sim:
-            config_path = os.path.join(stack_master_path, 'config', self.racecar_version, 'car_model.yaml')
+            config_file = (
+                'sim_params.yaml'
+                if self.racecar_version == 'SIM'
+                else 'car_model.yaml'
+            )
+            config_path = os.path.join(
+                stack_master_path, 'config',
+                self.racecar_version, config_file
+            )
             with open(config_path, 'r') as f:
                 car_params = yaml.safe_load(f)
                 self.wheelbase = car_params['lr'] + car_params['lf']
         else:
-            config_path = os.path.join(stack_master_path, 'config', self.racecar_version, 'vesc.yaml')
+            config_path = os.path.join(
+                stack_master_path, 'config',
+                self.racecar_version, 'vesc.yaml'
+            )
             with open(config_path, 'r') as f:
                 car_params = yaml.safe_load(f)
-                self.wheelbase = car_params['vesc_to_odom_node']['ros__parameters']['wheelbase']
+                self.wheelbase = car_params[
+                    'vesc_to_odom_node'
+                ]['ros__parameters']['wheelbase']
 
         self.create_subscription(Imu, '/vesc/sensors/imu/raw', self.imu_cb,
                                  10)  # acceleration subscriber for steer change
