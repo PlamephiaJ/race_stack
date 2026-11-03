@@ -36,6 +36,8 @@ services:
     container_name: forzaeth_devcontainer_jet_$USER
     image: race_stack:humble_jet_$USER
     <<: *common-settings
+    command: ["/bin/bash", "-lc", "source /opt/ros/humble/setup.bash && exec ros2 run rmw_zenoh_cpp rmw_zenohd"]
+    restart: unless-stopped
     runtime: nvidia
     deploy:
       resources:

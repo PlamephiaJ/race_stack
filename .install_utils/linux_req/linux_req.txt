@@ -30,3 +30,10 @@ ros-humble-rqt-common-plugins
 ros-humble-joy-linux
 
 ros-humble-image-transport-plugins
+ros-humble-ros2run
+ros-humble-ros2launch
+ros-humble-ros2pkg
+ros-humble-ament-cmake-auto
+ros-humble-ament-lint-auto
+ros-humble-ament-lint-common
+ros-humble-ament-cmake-cppcheck
