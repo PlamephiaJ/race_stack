@@ -5,6 +5,34 @@ ARG USE_VIO=false
 SHELL [ "/bin/bash", "-c" ]
 ARG DEBIAN_FRONTEND=noninteractive
 
+# Fix expired ROS 2 APT signing key
+RUN set -eux; \
+    rm -f \
+        /etc/apt/sources.list.d/ros2.list \
+        /etc/apt/sources.list.d/ros2-latest.list \
+        /etc/apt/sources.list.d/ros2.sources; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl; \
+    ROS_APT_SOURCE_VERSION="$( \
+        curl -fsSL \
+        https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest \
+        | grep -F '"tag_name"' \
+        | cut -d '"' -f 4 \
+    )"; \
+    test -n "$ROS_APT_SOURCE_VERSION"; \
+    . /etc/os-release; \
+    ROS_UBUNTU_CODENAME="${UBUNTU_CODENAME:-${VERSION_CODENAME}}"; \
+    ROS_DEB_NAME="ros2-apt-source_${ROS_APT_SOURCE_VERSION}.${ROS_UBUNTU_CODENAME}_all.deb"; \
+    ROS_DEB_URL="https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ROS_APT_SOURCE_VERSION}/${ROS_DEB_NAME}"; \
+    curl -fL --retry 3 \
+        -o /tmp/ros2-apt-source.deb \
+        "$ROS_DEB_URL"; \
+    dpkg -i /tmp/ros2-apt-source.deb; \
+    apt-get update; \
+    rm -f /tmp/ros2-apt-source.deb
+
 ADD ./.install_utils/basalt.repos /.install_utils/basalt.repos
 ADD ./.install_utils/basalt_ros_setup.sh /.install_utils/basalt_ros_setup.sh
 RUN if [[ "$USE_VIO" == "true" ]]; then chmod +x /.install_utils/basalt_ros_setup.sh && /.install_utils/basalt_ros_setup.sh; fi
