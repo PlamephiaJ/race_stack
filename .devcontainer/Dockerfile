@@ -63,13 +63,49 @@ RUN if [[ "$PLATFORM" == "jet" ]]; then \
     fi
 
 RUN apt-get update && xargs apt-get install -y < /.install_utils/linux_req.txt
-ADD ./.install_utils/python_req.txt /tmp/.install_utils/python_req.txt
-RUN pip3 install --index-url https://pypi.org/simple -r /tmp/.install_utils/python_req.txt || true
+COPY ./.install_utils/python_req_portable.txt /tmp/python_req_portable.txt
 
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential python3-dev && \
-    pip3 install --index-url https://pypi.org/simple "setuptools==58.2.0" wheel "cython<3" && \
+# Ubuntu 22.04 provides the compatible SciPy and Matplotlib versions
+# on ARM64, avoiding unsupported source builds.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential python3-dev python3-scipy python3-matplotlib
+
+# Never suppress dependency installation failures.
+RUN python3 -m pip install \
+    --index-url https://pypi.org/simple \
+    -r /tmp/python_req_portable.txt
+
+# Preserve NVIDIA's OpenCV on Jetson; install OpenCV on non-Jetson hosts.
+RUN if [[ "${PLATFORM}" != "jet" ]]; then \
+      python3 -m pip install \
+        --index-url https://pypi.org/simple \
+        "opencv-python==4.8.1.78"; \
+    fi
+
+# Install quadprog explicitly because trajectory-planning-helpers has
+# an older, incompatible quadprog dependency declaration.
+RUN python3 -m pip install \
+      --index-url https://pypi.org/simple \
+      "setuptools==58.2.0" wheel "cython<3" && \
     SETUPTOOLS_USE_DISTUTILS=stdlib \
-    pip3 install --index-url https://pypi.org/simple --no-build-isolation "quadprog~=0.1.11"
+    python3 -m pip install \
+      --index-url https://pypi.org/simple \
+      --no-build-isolation \
+      "quadprog==0.1.13" && \
+    python3 -m pip install \
+      --index-url https://pypi.org/simple \
+      --no-deps \
+      "trajectory-planning-helpers==0.79"
+
+# Install the exact optimizer source tracked as a Git submodule.
+# Missing submodules must fail the Docker build.
+COPY planner/global_planner/global_planner/global_racetrajectory_optimization /tmp/race_stack_optimizer
+
+RUN test -f /tmp/race_stack_optimizer/setup.py && \
+    python3 -m pip install \
+      --no-deps --no-build-isolation \
+      /tmp/race_stack_optimizer && \
+    python3 -c "import global_racetrajectory_optimization"
 
 ADD ./.install_utils /.install_utils
 RUN useradd -ms /bin/bash -u ${UID} -G sudo ${USER} && groupadd -fg ${GID} ${USER} \

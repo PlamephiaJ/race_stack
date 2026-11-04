@@ -70,7 +70,7 @@ class MappingNode(Node):
         """Wait for a key press on the terminal and return it."""
         
         try:
-            tty.setraw(self._tty.fileno())
+            tty.setcbreak(self._tty.fileno())
             rlist, _, _ = select.select([self._tty], [], [], 0.1)
             if rlist:
                 return self._tty.read(1)
@@ -221,10 +221,6 @@ class MappingNode(Node):
             )
         
         key = self.get_key()
-        if key and key == '\x03':  # Ctrl-C
-            self.get_logger().info("Ctrl-C detected, shutting down.")
-            self.destroy_node()
-            rclpy.shutdown()
         if key and key == 'y':
             self.save_map()
             
@@ -275,9 +271,12 @@ def main(args=None):
     
     rclpy.init(args=args)
     node = MappingNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
