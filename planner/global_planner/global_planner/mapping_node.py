@@ -8,15 +8,12 @@ import shutil
 import yaml
 import cv2
 import numpy as np
-import matplotlib
-matplotlib.use('TkAgg')
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Button
 
 
 import rclpy
 import tf2_ros
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from rclpy.time import Time
 from nav_msgs.msg import OccupancyGrid
 from cartographer_ros_msgs.srv import FinishTrajectory, WriteState
@@ -52,13 +49,17 @@ class MappingNode(Node):
         self.map_frame = 'map'
         self.base_frame = 'base_link'
         
-        self.fig = None
-        
         self._tty = open('/dev/tty', 'r')
         self._old_settings = termios.tcgetattr(self._tty)
         
         self.finish_trajectory_client = self.create_client(FinishTrajectory, '/finish_trajectory')
         self.write_state_client = self.create_client(WriteState, '/write_state')
+        self.filtered_map_pub = self.create_publisher(
+            OccupancyGrid, '/map_filtered', QoSProfile(
+                depth=1,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            ))
         self.create_subscription(OccupancyGrid, '/map', self.map_cb, 10)
 
         self.tf_buffer = tf2_ros.Buffer()
@@ -78,16 +79,6 @@ class MappingNode(Node):
         finally:
             termios.tcsetattr(self._tty, termios.TCSADRAIN, self._old_settings)
             
-    def plot(self):
-        """Plots the filtered map and updates it every 2 seconds."""
-        
-        if self.map_occupancy_grid is None:
-            return
-        self.filter_map_occupancy_grid()
-        self.ax1.imshow(self.filtered_map, cmap='gray')
-        plt.show(block=False)
-        plt.pause(2)  # only update the plot every 2 seconds
-        
     def latch_initial_pose(self) -> None:
         """
         Latch the start pose from the map -> base_link transform, once it exists.
@@ -135,6 +126,15 @@ class MappingNode(Node):
         self.map_resolution = msg.info.resolution  # float32, [m/cell]
         self.map_origin = msg.info.origin.position
         self.map_occupancy_grid = msg.data  # int8[]
+        self.filter_map_occupancy_grid()
+
+        filtered_msg = OccupancyGrid()
+        filtered_msg.header = msg.header
+        filtered_msg.info = msg.info
+        # Keep the original OccupancyGrid row order; only saved PNGs are flipped.
+        # The filtered image uses white for free and black for occupied cells.
+        filtered_msg.data = np.where(self.filtered_map == 255, 0, 100).astype(np.int8).ravel().tolist()
+        self.filtered_map_pub.publish(filtered_msg)
             
     def filter_map_occupancy_grid(self) -> None:
         """
@@ -158,7 +158,7 @@ class MappingNode(Node):
         kernel = np.ones((self.filter_kernel_size, self.filter_kernel_size), np.uint8)
         self.filtered_map = cv2.morphologyEx(bw, cv2.MORPH_OPEN, kernel, iterations=2)
         
-    def save_map(self, _=None) -> None:
+    def save_map(self) -> None:
         """Saves the filtered map as a PNG and YAML file in the specified directory."""       
         if self.map_occupancy_grid is None:
             self.get_logger().error("No map received yet. Cannot save the map.")
@@ -200,26 +200,12 @@ class MappingNode(Node):
         """Main Loop"""
         
         self.get_logger().log(
-            "Mapping active. Press 'y' to save the map or use the button on the plot.",
+            "Mapping active. View /map_filtered in RViz and press 'y' in this terminal to save the map.",
             severity=rclpy.logging.LoggingSeverity.INFO,
             once=True,
         )
         self.latch_initial_pose()
 
-        try:
-            if self.fig is None:
-                self.fig, (self.ax1, self.axfinish) = plt.subplots(2, 1, gridspec_kw={'height_ratios': [5, 1]})
-            self.fig.suptitle('Filtered map')
-            self.btn_compute = Button(self.axfinish, 'Map ready? Click to save!')
-            self.btn_compute.on_clicked(self.save_map)
-            self.plot()
-        except Exception as e:
-            self.get_logger().log(
-                "Could not create a plot, press 'y' to save the map without a plot. Error: " + str(e),
-                severity=rclpy.logging.LoggingSeverity.WARN,
-                once=True,
-            )
-        
         key = self.get_key()
         if key and key == 'y':
             self.save_map()

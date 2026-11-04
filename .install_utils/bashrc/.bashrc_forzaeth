@@ -5,3 +5,14 @@ source /home/$USERNAME/ws/install/setup.bash
 alias sauce='source /opt/ros/${ROS_DISTRO}/setup.bash && source /home/${USERNAME}/ws/install/setup.bash && { [ -f /opt/basalt_ws/install/setup.bash ] && source /opt/basalt_ws/install/setup.bash; true; }'
 alias scripz='cd /home/${USERNAME}/ws/src/race_stack/stack_master/scripts'
 alias zenoh='cd /home/${USERNAME}/ws/src/race_stack/stack_master/scripts && ./run_zenoh.sh'
+
+# >>> race_stack X11 display fallback >>>
+if [ -z "${DISPLAY:-}" ]; then
+    for socket in /tmp/.X11-unix/X*; do
+        if [ -S "$socket" ]; then
+            export DISPLAY=":${socket##*/X}"
+            break
+        fi
+    done
+fi
+# <<< race_stack X11 display fallback <<<

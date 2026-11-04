@@ -32,4 +32,22 @@ The node publishes to:
 - `/map_infos`: Publishes map infos like estimated lap time and maximum speed.
 - `/estimated_lap_time`: Publishes the estimated lap time.
 
+## Mapping preview and saving
+
+`mapping_node` filters each incoming `/map` and publishes the result on
+`/map_filtered` (`nav_msgs/msg/OccupancyGrid`). It uses the same threshold and
+morphological opening as the saved map, with free cells set to `0` and occupied
+cells set to `100` (unknown input cells are treated as occupied before filtering).
+The original header, resolution, dimensions and origin are preserved.
+
+On the remote computer, open RViz2, set **Fixed Frame** to `map` (or the input
+map's frame), and add a **Map** display with topic `/map_filtered`. Set its
+Reliability Policy to **Reliable** and Durability Policy to **Transient Local**
+to receive the latest map even when RViz starts after the last update. Updates
+are published whenever a new `/map` arrives. Both computers must use the same
+`ROS_DOMAIN_ID` and have working ROS2 network discovery.
+
+There is no Matplotlib preview window. Press `y` in the terminal running the
+mapping launch to save the PNG/YAML maps and Cartographer state as before.
+
 
