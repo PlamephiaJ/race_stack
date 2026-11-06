@@ -2,7 +2,7 @@
 # Remeasure after remounting hardware. xyz in metres, rpy in radians (or quat as [x, y, z, w]).
 transforms:
   - {parent: base_link, child: laser, xyz: [0.27, 0.0, 0.11], rpy: [0.0, 0.0, 0.0]}
-  - {parent: base_link, child: imu, xyz: [0.33, 0.0, 0.09], quat: [0.0, 0.0, 0.0, 1.0]}
+  - {parent: base_link, child: imu, xyz: [0.0, 0.065, 0.165], quat: [0.0, 0.0, 0.0, 1.0]}
   # RealSense D455 (VIO), remeasure on a mount change
   - {parent: base_link, child: camera_link, xyz: [0.262377, 0.043761, 0.120451], rpy: [-0.03, -0.241, 0.009]}
   # D455 camera_link -> IMU body (factory)
