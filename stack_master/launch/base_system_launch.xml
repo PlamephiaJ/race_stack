@@ -4,9 +4,12 @@
   <arg name="floor" default="dubi" />
   <arg name="map_name" default="latest" description="Map name in stack_master/maps" />
   <arg name="sim" default="False" description="True/False if you want to run simulation" />
-  <arg name="loc_algorithm" default="slam" description="'slam' / 'synpf' to switch localisation algorithm" />
-  <arg name="use_vio" default="$(env USE_VIO false)" description="Run RealSense camera + Basalt VIO (set via USE_VIO in .env)" />
-  <arg name="viz_flow" default="False" description="Publish /basalt/flow_image with tracked VIO features" />
+  <arg name="loc_algorithm" default="slam"
+    description="'slam' / 'synpf' to switch localisation algorithm" />
+  <arg name="use_vio" default="$(env USE_VIO false)"
+    description="Run RealSense camera + Basalt VIO (set via USE_VIO in .env)" />
+  <arg name="viz_flow" default="False"
+    description="Publish /basalt/flow_image with tracked VIO features" />
 
   <!-- Note: This is merely the share path (read-only) as the base_system
     is not expected to modify maps in any way. -->
@@ -16,6 +19,8 @@
   <group if="$(var sim)">
     <include file="$(find-pkg-share f1tenth_gym_ros)/launch/gym_bridge_launch.py">
       <arg name="map_yaml_path" value="$(var map_path)/$(var map_name).yaml" />
+      <arg name="racecar_version" value="$(var racecar_version)" />
+      <arg name="floor" value="$(var floor)" />
     </include>
     <!-- same sensor transforms as on the real car -->
     <include file="$(find-pkg-share stack_master)/launch/static_transforms_launch.xml">
@@ -43,7 +48,8 @@
   </group>
 
   <!-- launch frenet odom republisher (pose from TF, velocity from /state_estimation/odom) -->
-  <include file="$(find-pkg-share frenet_odom_republisher)/launch/frenet_odom_republisher_launch.xml">
+  <include
+    file="$(find-pkg-share frenet_odom_republisher)/launch/frenet_odom_republisher_launch.xml">
     <arg name="use_sim_time" value="$(var sim)" />
   </include>
 
