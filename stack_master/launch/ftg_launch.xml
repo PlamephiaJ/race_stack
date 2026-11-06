@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="racecar_version" default="$(env RACECAR_VERSION BLUE)"
+        description="Car configuration used for steering calibration" />
+    <arg name="sim_opp" default="false"
+        description="Control the simulated opponent using /opp_scan and /opp_drive" />
+    <arg name="param_file"
+        default="$(find-pkg-share stack_master)/config/follow_the_gap_params.yaml" />
+    <!-- Empty overrides preserve the values from param_file. -->
+    <arg name="max_speed" default=""
+        description="Maximum commanded speed in m/s; defaults to the YAML value (1.0)" />
+    <arg name="max_deceleration" default=""
+        description="Maximum allowed deceleration in m/s^2; defaults to the YAML value (2.5)" />
+    <arg name="minimum_gap_angle" default=""
+        description="Minimum navigable gap width in radians; defaults to the YAML value (0.12)" />
+
+    <include file="$(find-pkg-share stack_master)/launch/ftg_launch.py">
+        <arg name="racecar_version" value="$(var racecar_version)" />
+        <arg name="sim_opp" value="$(var sim_opp)" />
+        <arg name="param_file" value="$(var param_file)" />
+        <arg name="max_speed" value="$(var max_speed)" />
+        <arg name="max_deceleration" value="$(var max_deceleration)" />
+        <arg name="minimum_gap_angle" value="$(var minimum_gap_angle)" />
+    </include>
+</launch>

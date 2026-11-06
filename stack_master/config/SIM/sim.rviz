@@ -9,6 +9,7 @@ Panels:
         - /Perception1/Detection1
         - /Perception1/Detection1/Breakpoints1/Topic1
         - /Perception1/Tracking1
+        - /Planning1
       Splitter Ratio: 0.5
     Tree Height: 793
   - Class: rviz_common/Selection
@@ -464,6 +465,73 @@ Visualization Manager:
       Displays:
         - Class: rviz_default_plugins/MarkerArray
           Enabled: true
+          Name: Avoidance Spline
+          Namespaces:
+            {}
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /planner/avoidance/markers
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
+          Name: Local Control Waypoints
+          Namespaces:
+            {}
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /local_waypoints/markers
+          Value: true
+        - Class: rviz_default_plugins/Marker
+          Enabled: false
+          Name: Considered Obstacle
+          Namespaces:
+            {}
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            Filter size: 1
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /planner/avoidance/considered_OBS
+          Value: false
+        - Class: rviz_default_plugins/Marker
+          Enabled: false
+          Name: Predicted Obstacle
+          Namespaces:
+            {}
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            Filter size: 1
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /planner/avoidance/propagated_obs
+          Value: false
+        - Class: rviz_default_plugins/Marker
+          Enabled: true
+          Name: Ego State
+          Namespaces:
+            {}
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            Filter size: 1
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /state_marker
+          Value: true
+      Enabled: true
+      Name: Planning
+    - Class: rviz_common/Group
+      Displays:
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
           Name: Speed Sectors
           Namespaces:
             "": true
@@ -492,7 +560,7 @@ Visualization Manager:
   Global Options:
     Background Color: 48; 48; 48
     Fixed Frame: map
-    Frame Rate: 30
+    Frame Rate: 15
   Name: root
   Tools:
     - Class: rviz_default_plugins/Interact

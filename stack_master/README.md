@@ -56,6 +56,47 @@ ros2 launch stack_master time_trials_launch.xml racecar_version:=<NUCx used> LU_
   - `<Look-Up Table name>` is the name of the Look-Up Table you want to use. It must belong to the list of Look-Up Tables available in the `systm_identification/steering_lookup/cfg` folder.
   - `<control algorithm>` is the control algorithm you want to use. Current possibilities are MAP / PP.
 
+### Follow the Gap
+
+Build and source the controller and launch configuration after adding FTG:
+
+```shell
+cd ~/ws
+colcon build --packages-select controller stack_master --symlink-install
+source install/setup.bash
+```
+
+Start the base system (or the simulator) as above, then run the standalone
+`controller.follow_the_gap` node instead of the time trials/head-to-head controller:
+
+```shell
+# Ego car (real car or simulator)
+ros2 launch stack_master ftg_launch.xml racecar_version:=BLUE sim_opp:=false
+
+# Simulated opponent (requires num_agent: 2 in config/SIM/sim.yaml)
+ros2 launch stack_master ftg_launch.xml racecar_version:=BLUE sim_opp:=true
+```
+
+`sim_opp` selects which car to control; it does not start the simulator.
+FTG uses `/scan` and `/drive` for the ego car, or `/opp_scan` and `/opp_drive`
+under node namespace `/opp_racecar` for the opponent. It does not require
+waypoints or the state machine. Run only one autonomous controller per car.
+On the real car, the existing actuation manager still requires the autonomous
+deadman button (button 5 for BLUE).
+
+Edit `config/follow_the_gap_params.yaml` to configure `max_speed` (default
+1.0 m/s), `max_deceleration` (2.5 m/s²), and `minimum_gap_angle` (0.12 rad).
+The same file applies to both ego and opponent. Individual launch arguments
+override the file, and `param_file` can select a different ROS parameter YAML:
+
+```shell
+ros2 launch stack_master ftg_launch.xml racecar_version:=BLUE sim_opp:=false \
+  max_speed:=1.5 max_deceleration:=2.5 minimum_gap_angle:=0.15
+```
+
+Steering calibration is loaded from `config/<racecar_version>/vesc.yaml` before
+the FTG parameter file; the `SIM` configuration uses the node's steering defaults.
+
 ### Head to Head
 ```shell
 ros2 launch stack_master head_to_head_launch.xml racecar_version:=<NUCx used> LU_table:=<Look-Up Table name> ctrl_algo:=<control algorithm> overtake_mode:=spliner

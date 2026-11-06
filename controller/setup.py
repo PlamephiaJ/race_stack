@@ -24,6 +24,7 @@ setup(
     entry_points={
         'console_scripts': [
             'controller = controller.controller_manager:main',
+            'reactive_node = controller.follow_the_gap:main',
         ],
     },
 )
