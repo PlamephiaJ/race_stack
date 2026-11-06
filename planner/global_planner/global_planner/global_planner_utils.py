@@ -463,7 +463,7 @@ def add_dist_to_cent(centerline_smooth: np.ndarray,
     return centerline_comp
 
 
-def write_centerline(centerline: np.ndarray, sp_bool: bool = False) -> MarkerArray:
+def write_centerline(centerline: np.ndarray, sp_bool: bool = False, output_dir=None) -> MarkerArray:
     """
     Create a csv file with centerline maps.
 
@@ -476,6 +476,8 @@ def write_centerline(centerline: np.ndarray, sp_bool: bool = False) -> MarkerArr
         The centerline in form [x_m, y_m, w_tr_right_m, w_tr_left_m]
     sp_bool : bool, default=False
         Used for shortest path optimization when another centerline csv should be created
+    output_dir : path-like, optional
+        Directory for intermediate CSVs; defaults to ~/.ros for existing callers.
 
     Returns
     -------
@@ -486,7 +488,8 @@ def write_centerline(centerline: np.ndarray, sp_bool: bool = False) -> MarkerArr
     centerline_wpnts = WpntArray()
 
     cent_str = 'map_centerline.csv' if not sp_bool else 'map_centerline_2.csv'
-    cent_path = Path.home() / ".ros" / cent_str
+    cent_path = (Path(output_dir) if output_dir is not None else Path.home() / '.ros') / cent_str
+    cent_path.parent.mkdir(parents=True, exist_ok=True)
     with open(cent_path, 'w', newline='') as file:
         writer = csv.writer(file)
         id_cnt = 0  # for marker id

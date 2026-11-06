@@ -7,7 +7,7 @@ import yaml
 import cv2
 import numpy as np
 import matplotlib
-matplotlib.use('TkAgg')
+matplotlib.use('Agg' if os.environ.get('RACE_STACK_PLANNER_HEADLESS') == '1' else 'TkAgg')
 import matplotlib.pyplot as plt
 from skimage.morphology import skeletonize
 
@@ -195,9 +195,11 @@ class GlobalPlannerNode(Node):
         ################################################################################################################
         # Compute global trajectory with mincurv_iqp optimization
         ################################################################################################################
-        track_path_root = os.path.join(Path.home(), ".ros")
+        track_path_root = str(getattr(self, 'work_dir', Path.home() / '.ros'))
+        os.makedirs(track_path_root, exist_ok=True)
         iqp_centerline_path = os.path.join(track_path_root, 'map_centerline')
         sp_centerline_path = os.path.join(track_path_root, 'map_centerline_2')
+        optimizer = getattr(self, 'trajectory_optimizer', trajectory_optimizer)
 
         cent_with_dist = add_dist_to_cent(centerline_smooth=centerline_smooth,
                                           centerline_meter=centerline_meter_int,
@@ -210,11 +212,11 @@ class GlobalPlannerNode(Node):
                                           reverse=self.reverse_mapping)
 
         # Write centerline in a csv file and get a marker array of it
-        _, centerline_markers = write_centerline(cent_with_dist)
+        _, centerline_markers = write_centerline(cent_with_dist, output_dir=track_path_root)
 
         self.get_logger().info('Start Global Trajectory optimization with iterative minimum curvature...')
         try:
-            global_trajectory_iqp, bound_r_iqp, bound_l_iqp, est_t_iqp = trajectory_optimizer(
+            global_trajectory_iqp, bound_r_iqp, bound_l_iqp, est_t_iqp = optimizer(
                 input_path=self.input_path, track_name=iqp_centerline_path, curv_opt_type='mincurv_iqp', safety_width=self.safety_width, plot=(
                     self.show_plots and not self.map_editor_mode))
         except RuntimeError as e:
@@ -251,7 +253,7 @@ class GlobalPlannerNode(Node):
         ################################################################################################################
         # Compute centerline trajectory: same preprocessing and velocity profile as the optimized lines, no optimization
         ################################################################################################################
-        global_trajectory_cl, *_ = trajectory_optimizer(
+        global_trajectory_cl, *_ = optimizer(
             input_path=self.input_path, track_name=iqp_centerline_path, curv_opt_type='centerline',
             safety_width=self.safety_width, plot=False)
         d_right_cl, d_left_cl = dist_to_bounds(trajectory=global_trajectory_cl,
@@ -274,7 +276,7 @@ class GlobalPlannerNode(Node):
         self.get_logger().info('Start reverse Global Trajectory optimization with shortest path...')
 
         self.get_logger().info('Start Global Trajectory optimization with iterative minimum curvature for overtaking...')
-        global_trajectory_iqp_ot, *_ = trajectory_optimizer(input_path=self.input_path,
+        global_trajectory_iqp_ot, *_ = optimizer(input_path=self.input_path,
                                                             track_name=iqp_centerline_path,
                                                             curv_opt_type='mincurv_iqp',
                                                             safety_width=self.safety_width_sp,
@@ -291,11 +293,11 @@ class GlobalPlannerNode(Node):
                                               bound_l=bound_l_water,
                                               reverse=self.reverse_mapping)
 
-        _, new_centerline_markers = write_centerline(new_cent_with_dist, sp_bool=True)
+        _, new_centerline_markers = write_centerline(new_cent_with_dist, sp_bool=True, output_dir=track_path_root)
 
         # to use iqp as new centerline, set trackname='map_centerline_2', otherwise use track_name='map_centerline'
         # is a bit faster but cuts corner a bit more
-        global_trajectory_sp, bound_r_sp, bound_l_sp, est_t_sp = trajectory_optimizer(
+        global_trajectory_sp, bound_r_sp, bound_l_sp, est_t_sp = optimizer(
             input_path=self.input_path, track_name=sp_centerline_path, curv_opt_type='shortest_path', safety_width=self.safety_width_sp, plot=(
                 self.show_plots and not self.map_editor_mode))
 

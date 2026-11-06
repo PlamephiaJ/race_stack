@@ -39,6 +39,9 @@ Or check out our [video playlist on Youtube](https://www.youtube.com/playlist?li
 
 After installation, the car (or the simulation environment) is ready to be tested. For examples on how to run the different modules on the car, refer to the [`stack_master` README](./stack_master/README.md).
 
+For offline map drawing, editing, and Global Planner trajectory preview, see the
+[Map Editor](utilities/nodes/map_editor/README.md) (`ros2 run map_editor map_editor`).
+
 ## Contributing
 
 In case you find our package helpful and want to contribute, please either raise an issue or directly make a pull request. To create pull request please follow the guidelines in [CONTRIBUTING](./CONTRIBUTING.md).
