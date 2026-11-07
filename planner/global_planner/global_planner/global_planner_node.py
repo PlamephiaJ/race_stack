@@ -7,7 +7,8 @@ import yaml
 import cv2
 import numpy as np
 import matplotlib
-matplotlib.use('Agg' if os.environ.get('RACE_STACK_PLANNER_HEADLESS') == '1' else 'TkAgg')
+if os.environ.get('RACE_STACK_PLANNER_HEADLESS') == '1':
+    matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from skimage.morphology import skeletonize
 
@@ -106,6 +107,10 @@ class GlobalPlannerNode(Node):
         else:
             self.initial_position = map_info['initial_pose']
         self.skeleton = skeleton
+        if matplotlib.get_backend().lower() == 'agg':
+            self.get_logger().info("Headless mode: skipping map plots.")
+            self.show_plots = False
+            return
         try:
             f, (ax0, ax1) = plt.subplots(2, 1)
             f.suptitle(f"Map [{self.map_name}]: Filtered map versus morphological skeleton")

@@ -20,3 +20,8 @@ pyglet==1.5.20
 PyOpenGL==3.1.9
 Pillow==10.4.0
 PyYAML==6.0.2
+
+# State estimation evaluation
+rosbags>=0.10.0
+evo==1.30.1
+eth-colors-pbl

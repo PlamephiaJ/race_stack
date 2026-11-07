@@ -1,0 +1,8 @@
+# BLUE VESC IMU calibration
+imu_to_base:
+  ros__parameters:
+    # Gyroscope bias in IMU frame (rad/s)
+    gyro_bias: [0.0, 0.0, 0.0]
+
+    # Gyroscope scale correction
+    gyro_scale: 1.0
