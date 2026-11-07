@@ -55,8 +55,9 @@ ros2 run map_editor map_editor --map /path/to/my_track/my_track.yaml
    **Global Planner parameters…** 可调整车辆、采样、优化和速度参数，再点击
    **Generate trajectories**。这是对当前地图与参数的快照规划，不要求先保存。
 7. 勾选以下任意图层，在图内预览；日志显示优化进度、圈速、错误。生成期间界面仍可编辑。
-8. 修改地图边界/障碍物，再生成，直到满意。**Save map + current trajectory** 导出当前地图
-   和匹配的轨迹；**Save as new map** 创建 `maps/<name>/<name>.png` 与同名 YAML。
+8. 修改地图边界/障碍物，再生成，直到满意。在右侧 **Sectors** 页签配置速度与超车分段。
+   **Save map + trajectory + sectors** 导出地图、匹配的轨迹及两个 Sector YAML，自动显示
+   SIM / 真车地图检查结果；**Save as new map** 创建 `maps/<name>/<name>.png` 与同名 YAML。
 
 | 图层 | 颜色 | 来源 |
 | --- | --- | --- |
@@ -101,13 +102,47 @@ ros2 run map_editor map_editor --map /path/to/my_track/my_track.yaml
 因此窗口不重复显示无效的 `width_opt`。`rate`、`show_plots` 和仅用于 mintime 的参数不用于
 当前离线流程，窗口中不提供这些字段。
 
+## Sectors：离线分段配置
+
+打开右侧 **Sectors** 页签（或选择 Sectors 工具），直接使用当前 Global Raceline。
+无需启动 Matplotlib Slicer、ROS 节点、仿真器或真车，也不会为分段重新计算轨迹。
+
+1. 选择 **Speed Sectors** 或 **Overtaking Sectors**；两套分界独立保存。
+2. **Canvas action → Add boundary** 后点击轨迹，在最近的 Global Waypoint 添加分界。
+   新段继承被分割段的配置。`start/end` 为数组索引，包含末端；第 0 点固定为首段起点。
+3. **Select / move boundaries** 下点击路段或右侧列表选段，拖动编号圆点移动分界；也可直接
+   修改 **Start boundary index**。分界不能越过相邻分界。右键点击圆点、Delete 模式或
+   **Delete selected start boundary** 删除分界，合并后保留前段参数。操作支持 Undo / Redo。
+4. Speed 配置每段 `scaling` 和全局 `global_limit`。修改这两个速度参数时，将各段 scaling
+   限制在 global_limit 内。各段有独立底色，细线由蓝到红显示缩放后的速度，悬停查看
+   waypoint 索引、原速和缩放速度。预览逐点复用运行代码的数学规则，包含分界前后各
+   10 个 waypoint 的线性插值和首尾处理；保存的原始轨迹速度不会被乘系数，避免运行时重复缩放。
+5. Overtaking 配置每段 `ot_flag`；绿色允许超车，灰色禁用。可编辑 `yeet_factor`、
+   `spline_len`；`ot_sector_begin` 保留并只读显示（当前运行代码未读取它）。检查 spline_len，
+   避免原插值器的过渡索引超出轨迹数组。
+   这里只显示允许区域，不生成新的超车轨迹。
+
+打开地图时自动加载 `speed_scaling.yaml`、`ot_sectors.yaml`，缺少时在有有效轨迹后提供默认配置：
+全赛道一个速度段（0.5）、一个禁止超车段。兼容旧 Slicer 将最后一个 `end` 写成 waypoint 数量
+的惯例，读取和无修改保存均保留该值。其他段的 end 必须与下段 start 连续。
+原 ROS 2 节点选择器、额外参数以及 `only_FTG`、`no_FTG` 会保留；后两者没有有效 GUI 控件。
+损坏的 YAML 会显示具体错误，在显式 **Reset to one section** 前不会被默认配置覆盖。
+
+修改地图或规划参数会暂停 Sector 编辑并隐藏过期轨迹，撤销回原状态可恢复。
+重新生成后检查点数、连续覆盖、索引范围以及按顺序记录的轨迹位置和 s 值；即使点数相同，
+位置或顺序变化也不会自动套用旧分段。此时查看新轨迹上的分段预览后，点击
+**Use existing indices on current trajectory** 明确采用原索引，或 **Reset to one section**
+重新划分。索引已越界时必须重置；两套配置分别处理。未处理的配置会阻止导出当前轨迹。
+
 ## 保存与一致性
 
 ```text
 stack_master/maps/custom_map/
 ├── custom_map.png
 ├── custom_map.yaml
-└── global_waypoints.json    # 成功生成且与地图匹配时保存
+├── global_waypoints.json    # 成功生成且与地图匹配时保存
+├── speed_scaling.yaml      # 原 Sector Tuner ROS 2 参数格式
+└── ot_sectors.yaml         # 原 ot_interpolator ROS 2 参数格式
 ```
 
 YAML 保留 resolution、完整 origin、阈值、initial_pose 和额外字段。
@@ -121,6 +156,24 @@ YAML 保留 resolution、完整 origin、阈值、initial_pose 和额外字段�
 保存修改后的地图而没有重新生成时，目录中的旧 `global_waypoints.json` 会改名为
 `global_waypoints.stale-<timestamp>.json`，避免误供给轨迹发布器。
 取消或规划失败不改用户地图，保留日志和之前仍匹配的预览。
+
+地图 YAML 的 `map_editor_validation` 扩展字段记录地图与轨迹摘要、两套 Sector 的轨迹绑定和
+已有定位数据的检查基线，不增加 Sector 参数格式或旁置配置文件。修改已保存的地图或替换轨迹
+导致摘要不符时，重新打开不会把旧轨迹视为有效；日志说明原因，需重新生成。
+原地图的其他字段和两个 Sector 文件中的非编辑参数保持原值。
+
+每次保存后自动从磁盘重新检查所需 PNG、地图 YAML、轨迹 JSON 和两个 Sector YAML，检查
+waypoint 数值、ID、递增 s、Section 连续覆盖与范围、轨迹绑定以及标准地图目录命名。
+结果显示 **SIM: READY / NOT READY**，缺失或不一致项逐条列出。尚未生成轨迹的地图可作为草稿
+保存，但不会显示 SIM 就绪。也可用 **File → Check SIM / real-car map readiness** 随时检查。
+这里验证的是地图文件包，运行环境、车辆配置及安装目录的数据同步仍需按原启动流程准备。
+
+真车检查查找启动文件要求的同名 `<map_name>.pbstream`，区分缺失/空文件、文件名不符、
+地图像素/比例/原点/阈值已改变、PBSTREAM 被替换以及存在但尚未验证空间匹配等情况。
+已有 PBSTREAM 的检查基线随地图保存，重启后仍可提示地图与定位数据已发生变化。
+**仅有文件不能证明扫描来源、坐标系、尺度和实地对齐正确，因此不会据此宣称真车就绪。**
+手绘或非扫描地图缺少对应扫描生成的 PBSTREAM，不能用于当前真车 Cartographer 定位流程；
+需扫描实际赛道并使用配套定位状态。编辑器不会创建、复制、改名或更新 PBSTREAM。
 
 导出的 `global_waypoints.json` 由原有序列化函数生成，可交给现有轨迹发布器和仿真流程。
 新建地图在源码目录保存后，如果消费者使用安装目录的数据副本，还需要重建
@@ -185,6 +238,8 @@ Planner 需要一条封闭、足够宽、有内外边界的赛道。开口、孤
 
 - `document.py`：NumPy 地图、元数据、坐标转换、压缩撤销历史、OpenCV 清理、PNG/YAML 持久化。
 - `canvas.py`：Qt 绘图工具、缩放平移、轨迹叠加。
+- `sectors.py` / `sector_panel.py`：原 ROS 参数读写、两套分段编辑、运行插值预览和 Qt 控件。
+- `readiness.py`：保存文件回读、SIM 文件一致性与真车定位数据检查。
 - `app.py`：地图库、操作面板、QProcess 后台任务、取消和快照版本校验。
 - `planner_worker.py`：调用原有 `GlobalPlannerNode.plan()`，不创建 ROS 节点或发布车辆话题。
   在局部坐标规划，再把轨迹、朝向和 Marker 变换到 YAML 的世界坐标。
@@ -215,6 +270,9 @@ MAP_EDITOR_TEST_DESKTOP=1 \
 集成测试覆盖取消、编辑期间结果过期、反向生成、旋转地图的四层预览、保存重载，
 并用原有 `read_global_waypoints` 验证 ROS 消息兼容性；还验证参数修改期间结果过期，
 以及真实优化器的最高速度与输出步长确实采用界面设置。
+Sector 测试额外覆盖增删拖动、独立划分、额外参数保留、旧末端索引、插值与原运行方法的逐点
+对照、同点数轨迹变化、过期保存重载、损坏配置恢复和 PBSTREAM 检查；完整规划集成测试会在
+新生成轨迹上编辑两套分段，再保存、重载并交给原 ROS 轨迹读取器。
 稳定性测试在独立子进程中启用 `PYTHONMALLOC=debug`，覆盖 3 万次信号发送的布尔引用计数，
 以及 210 次绘图、1680 次鼠标移动、撤销重做和 30 次参数弹窗；同时测试非 4 字节对齐的地图宽度。
 Qt 后台进程参考：[QProcess 官方文档](https://doc.qt.io/qtforpython-6/PySide6/QtCore/QProcess.html)。

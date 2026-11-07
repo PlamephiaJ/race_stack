@@ -5,15 +5,20 @@ import math
 import cv2
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QTransform
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView
 
 from .overlays import LAYERS, plan_layers
+from .sectors import COLORS
 
 
 class MapCanvas(QGraphicsView):
     changed = Signal()
     position = Signal(str)
+    sector_selected = Signal(int)
+    sector_add = Signal(int)
+    sector_delete = Signal(int)
+    sector_move = Signal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -36,6 +41,12 @@ class MapCanvas(QGraphicsView):
         self.buffer = None
         self.polygon = []
         self.pan_position = None
+        self.sector_kind = 'speed'
+        self.sector_action = 0
+        self.sector_speed_preview = True
+        self.sector_selected_index = 0
+        self.sector_drag = None
+        self.sectors_paused = False
         self.preview = self.scene().addPath(QPainterPath(), QPen(QColor('#d946ef'), 1))
         self.preview.setZValue(20)
 
@@ -49,9 +60,11 @@ class MapCanvas(QGraphicsView):
         self.cancel_gesture()
         self.tool = tool
         self.setCursor(Qt.CursorShape.OpenHandCursor if tool == 'Pan' else Qt.CursorShape.CrossCursor)
+        self.refresh_overlays()
 
     def cancel_gesture(self):
         self.start = self.last = self.buffer = self.pan_position = None
+        self.sector_drag = None
         self.polygon = []
         self.preview.setPath(QPainterPath())
         if self.document is not None:
@@ -105,6 +118,8 @@ class MapCanvas(QGraphicsView):
                 item = self.scene().addPath(path, pen)
                 item.setZValue(10)
                 self.overlay_items.append(item)
+            if self.tool == 'Sectors':
+                self._sector_overlays()
         if 'initial_pose' in doc.metadata:
             x, y, yaw = doc.metadata['initial_pose']
             length = 0.6
@@ -118,11 +133,104 @@ class MapCanvas(QGraphicsView):
             item.setZValue(12)
             self.overlay_items.append(item)
 
+    def _sector_overlays(self):
+        doc = self.document
+        kind = self.sector_kind
+        if doc.sector_issues(kind, check_binding=False):
+            return
+        config = doc.sectors[kind]
+        pixels = doc.world_to_pixel(plan_layers(doc.plan)['Global Raceline'])
+        unconfirmed = bool(doc.sector_issues(kind))
+        for i, section in enumerate(config.sections):
+            color = COLORS[i % len(COLORS)] if kind == 'speed' else (
+                '#35df85' if section['ot_flag'] else '#87929d')
+            path = QPainterPath(QPointF(*pixels[section['start']]))
+            for point in pixels[section['start'] + 1:min(section['end'] + 2, len(pixels))]:
+                path.lineTo(QPointF(*point))
+            pen = QPen(QColor(color), 8 if i == self.sector_selected_index else 6)
+            pen.setCosmetic(True)
+            item = self.scene().addPath(path, pen)
+            item.setZValue(14)
+            item.setOpacity(.65 if unconfirmed else 1.)
+            self.overlay_items.append(item)
+        if kind == 'speed' and self.sector_speed_preview:
+            factors = config.speed_factors(len(pixels))
+            speeds = np.asarray([p['vx_mps'] for p in doc.plan['global_traj_wpnts_iqp']['wpnts']]) * factors
+            maximum = max(float(np.max([p['vx_mps'] for p in
+                                       doc.plan['global_traj_wpnts_iqp']['wpnts']])), .001)
+            # Group speed colors into paths to keep large tracks responsive.
+            bins = np.minimum(31, np.maximum(0, (speeds / maximum * 31).astype(int)))
+            for level in np.unique(bins[:-1]):
+                path = QPainterPath()
+                for index in np.flatnonzero(bins[:-1] == level):
+                    path.moveTo(QPointF(*pixels[index]))
+                    path.lineTo(QPointF(*pixels[index + 1]))
+                color = QColor.fromHsvF((1 - float(level) / 31) * .66, .9, 1.)
+                pen = QPen(color, 3)
+                pen.setCosmetic(True)
+                item = self.scene().addPath(path, pen)
+                item.setZValue(15)
+                self.overlay_items.append(item)
+        for i, section in enumerate(config.sections):
+            point = pixels[section['start']]
+            pen = QPen(QColor('#ffffff' if i == self.sector_selected_index else '#202830'), 2)
+            pen.setCosmetic(True)
+            item = self.scene().addEllipse(-8, -8, 16, 16, pen, QColor('#f6be45'))
+            item.setPos(float(point[0]), float(point[1]))
+            item.setFlag(item.GraphicsItemFlag.ItemIgnoresTransformations)
+            item.setZValue(16)
+            item.setToolTip(f"Section {i}, start waypoint {section['start']}" + (' (fixed)' if i == 0 else ''))
+            self.overlay_items.append(item)
+            label = self.scene().addSimpleText(str(i))
+            label.setBrush(QColor('#202830'))
+            label.setFlag(label.GraphicsItemFlag.ItemIgnoresTransformations)
+            label.setPos(float(point[0]), float(point[1]))
+            label.setTransform(QTransform.fromTranslate(-label.boundingRect().width() / 2,
+                                                         -label.boundingRect().height() / 2))
+            label.setZValue(17)
+            self.overlay_items.append(label)
+
+    def _sector_hit(self, event, boundaries=False):
+        doc = self.document
+        if not doc.plan_current or doc.sector_issues(self.sector_kind, check_binding=False):
+            return None
+        pixels = doc.world_to_pixel(plan_layers(doc.plan)['Global Raceline'])
+        indices = ([section['start'] for section in doc.sectors[self.sector_kind].sections]
+                   if boundaries else np.arange(len(pixels)))
+        pos = self.mapToScene(event.position().toPoint())
+        distances = np.linalg.norm(pixels[indices] - [pos.x(), pos.y()], axis=1)
+        nearest = int(np.argmin(distances))
+        if distances[nearest] * self.transform().m11() > 14:
+            return None
+        return nearest if boundaries else int(indices[nearest])
+
+    def _sector_press(self, event):
+        if self.sectors_paused or not self.document.plan_current or self.document.sector_issues(self.sector_kind):
+            return
+        boundary = self._sector_hit(event, boundaries=True)
+        if event.button() == Qt.MouseButton.RightButton or self.sector_action == 2:
+            if boundary is not None and boundary > 0:
+                self.sector_delete.emit(boundary)
+            return
+        index = self._sector_hit(event)
+        if index is None:
+            return
+        if self.sector_action == 1:
+            self.sector_add.emit(index)
+        else:
+            section = (boundary if boundary is not None else
+                       self.document.sectors[self.sector_kind].section_at(index))
+            self.sector_selected.emit(section)
+            if boundary is not None and boundary > 0:
+                self.sector_drag = (boundary, index)
+
     def wheelEvent(self, event):
         factor = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
         scale = self.transform().m11() * factor
         if 0.01 <= scale <= 100:
             self.scale(factor, factor)
+            if self.tool == 'Sectors':
+                self.refresh_overlays()
         event.accept()
 
     def _point(self, event):
@@ -138,6 +246,10 @@ class MapCanvas(QGraphicsView):
             self.pan_position = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
+            return
+        if self.tool == 'Sectors':
+            if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
+                self._sector_press(event)
             return
         if event.button() == Qt.MouseButton.RightButton:
             if self.tool == 'Polygon':
@@ -186,6 +298,25 @@ class MapCanvas(QGraphicsView):
         point = self._point(event)
         world = self.document.pixel_to_world(point)
         self.position.emit(f'Pixel {point[0]}, {point[1]}  |  Map {world[0]:.3f}, {world[1]:.3f} m')
+        if self.tool == 'Sectors':
+            index = self._sector_hit(event)
+            if index is not None:
+                text = f'Global Waypoint {index}'
+                if self.sector_kind == 'speed':
+                    factors = self.document.sectors['speed'].speed_factors(
+                        len(self.document.plan['global_traj_wpnts_iqp']['wpnts']))
+                    speed = self.document.plan['global_traj_wpnts_iqp']['wpnts'][index]['vx_mps']
+                    text += f' | {speed:.3f} → {speed * factors[index]:.3f} m/s (×{factors[index]:.3f})'
+                self.position.emit(text)
+                if self.sector_drag is not None:
+                    section = self.sector_drag[0]
+                    self.sector_drag = (section, index)
+                    pixels = self.document.world_to_pixel(plan_layers(self.document.plan)['Global Raceline'])
+                    radius = 9 / max(self.transform().m11(), .01)
+                    path = QPainterPath()
+                    path.addEllipse(QPointF(*pixels[index]), radius, radius)
+                    self.preview.setPath(path)
+            return
         if self.polygon:
             self._polygon_preview(point)
         if self.start is None:
@@ -213,6 +344,16 @@ class MapCanvas(QGraphicsView):
         if self.pan_position is not None:
             self.pan_position = None
             self.setCursor(Qt.CursorShape.OpenHandCursor if self.tool == 'Pan' else Qt.CursorShape.CrossCursor)
+            return
+        if self.tool == 'Sectors':
+            if self.sector_drag is not None and event.button() == Qt.MouseButton.LeftButton:
+                section, index = self.sector_drag
+                nearest = self._sector_hit(event)
+                if nearest is not None:
+                    index = nearest
+                self.cancel_gesture()
+                if not self.sectors_paused:
+                    self.sector_move.emit(section, index)
             return
         if self.start is None or event.button() != Qt.MouseButton.LeftButton:
             return

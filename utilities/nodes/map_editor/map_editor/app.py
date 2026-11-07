@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDockWidget,
     QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSpinBox,
-    QPlainTextEdit, QVBoxLayout, QWidget,
+    QPlainTextEdit, QTabWidget, QVBoxLayout, QWidget,
 )
 import yaml
 
@@ -25,6 +25,8 @@ from .parameter_dialog import PlannerParameterDialog
 from .parameters import METADATA_KEY, PlannerParameters
 from .paths import default_maps_root, planner_config
 from .qt_runtime import check_pyside_compatibility, check_xcb_dependencies, prepare_qt_environment
+from .readiness import validate_saved_map
+from .sector_panel import SectorPanel
 
 
 def real_spin(value, minimum, maximum, decimals=3):
@@ -126,9 +128,10 @@ class EditorWindow(QMainWindow):
         file_menu = self.menuBar().addMenu('File')
         self._action(file_menu, 'New map…', self.new_map, QKeySequence.StandardKey.New)
         self._action(file_menu, 'Open YAML…', self.open_dialog, QKeySequence.StandardKey.Open)
-        self._action(file_menu, 'Save map + current trajectory', self.save, QKeySequence.StandardKey.Save)
+        self._action(file_menu, 'Save map + trajectory + sectors', self.save, QKeySequence.StandardKey.Save)
         self._action(file_menu, 'Save as new map…', lambda: self.save(save_as=True),
                      QKeySequence.StandardKey.SaveAs)
+        self._action(file_menu, 'Check SIM / real-car map readiness', self.check_readiness)
         self._action(file_menu, 'Quit', self.close, QKeySequence.StandardKey.Quit)
         edit = self.menuBar().addMenu('Edit')
         self._action(edit, 'Undo', self.undo, QKeySequence.StandardKey.Undo, 'undo')
@@ -190,8 +193,8 @@ class EditorWindow(QMainWindow):
         form = QFormLayout()
         self.tool = QComboBox()
         self.tool.addItems(['Brush', 'Eraser', 'Line', 'Rectangle', 'Polygon',
-                            'Remove component', 'Initial pose', 'Pan'])
-        self.tool.currentTextChanged.connect(self.canvas.set_tool)
+                            'Remove component', 'Initial pose', 'Pan', 'Sectors'])
+        self.tool.currentTextChanged.connect(self.set_tool)
         form.addRow('Tool', self.tool)
         self.material = QComboBox()
         for label, value in (('Obstacle (black)', 0), ('Free track (white)', 255), ('Unknown (gray)', 205)):
@@ -252,7 +255,24 @@ class EditorWindow(QMainWindow):
             check.toggled.connect(lambda checked, name=label: self.toggle_layer(name, checked))
             layout.addWidget(check)
         layout.addStretch()
-        self._dock('Drawing / trajectory preview', widget, Qt.DockWidgetArea.RightDockWidgetArea)
+        self.control_tabs = QTabWidget()
+        self.control_tabs.addTab(widget, 'Map / Planner')
+        self.sector_panel = SectorPanel(self)
+        self.control_tabs.addTab(self.sector_panel, 'Sectors')
+        self.control_tabs.currentChanged.connect(self.mode_changed)
+        self._dock('Map / trajectory / sectors', self.control_tabs, Qt.DockWidgetArea.RightDockWidgetArea)
+
+    def set_tool(self, tool):
+        self.canvas.set_tool(tool)
+        if tool == 'Sectors':
+            self.control_tabs.setCurrentIndex(1)
+
+    def mode_changed(self, index):
+        if index == 1:
+            self.tool.setCurrentText('Sectors')
+        elif self.tool.currentText() == 'Sectors':
+            self.tool.setCurrentText('Pan')
+        self.sector_panel.refresh()
 
     def _logs(self):
         self.logs = QPlainTextEdit()
@@ -274,6 +294,8 @@ class EditorWindow(QMainWindow):
         self.document = document
         self.plan_pending = False
         self.canvas.set_document(document)
+        if document.plan_load_error:
+            self.logs.appendPlainText('Trajectory was not loaded: ' + document.plan_load_error)
         self._changed()
 
     def _changed(self):
@@ -287,6 +309,8 @@ class EditorWindow(QMainWindow):
         self.setWindowTitle(f'{name}{" *" if unsaved else ""} — Race Stack Map Editor')
         self.actions['undo'].setEnabled(bool(doc.undo_stack))
         self.actions['redo'].setEnabled(bool(doc.redo_stack))
+        self.canvas.sectors_paused = self.process is not None
+        self.sector_panel.refresh()
         if self.process is not None:
             self.plan_status.setText('Generating snapshot in background…')
         elif doc.plan_current:
@@ -397,10 +421,19 @@ class EditorWindow(QMainWindow):
             self.refresh_library()
             self._changed()
             self.statusBar().showMessage(f'Saved {path}', 6000)
+            self.check_readiness()
             return True
         except (OSError, ValueError, yaml.YAMLError) as error:
             self.error(f'Could not save map:\n{error}')
             return False
+
+    def check_readiness(self):
+        try:
+            report = validate_saved_map(self.document)
+            self.logs.appendPlainText('\n' + report.text())
+            QMessageBox.information(self, 'Map readiness', report.text())
+        except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError) as error:
+            self.error(f'Could not check map readiness:\n{error}')
 
     def undo(self):
         self.canvas.cancel_gesture()
@@ -525,12 +558,14 @@ class EditorWindow(QMainWindow):
             '2. Draw a closed free-space loop with occupied inner and outer walls.\n'
             '3. Optionally set Initial pose by dragging along the travel direction.\n'
             '4. Set Global Planner parameters, generate, toggle layers and edit again.\n'
-            '5. Save exports PNG + YAML + matching global_waypoints.json.\n\n'
+            '5. Open Sectors: choose Speed or Overtaking, add boundaries, select sections and configure.\n'
+            '6. Save exports PNG + YAML + matching trajectory + both Sector YAML files; checks SIM readiness.\n\n'
             'Brush width and noise area are in pixels. Eraser paints free space.\n'
             'Remove component deletes the entire clicked connected obstacle.\n'
             'Map / parameter changes hide outdated trajectories; undo restores matching preview.\n'
             'Planner profiles are saved in map YAML and can be imported / exported.\n'
-            'Real-car localization still requires corresponding localization data (e.g. PBSTREAM).')
+            'Replanning may require reviewing existing Sector indices or resetting sections.\n'
+            'Real-car localization requires a matching scan-built PBSTREAM; a hand-drawn map alone is insufficient.')
         QMessageBox.information(self, 'Map Editor workflow', message)
 
     def closeEvent(self, event):

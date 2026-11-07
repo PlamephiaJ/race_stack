@@ -11,12 +11,17 @@ pytestmark = pytest.mark.skipif(os.environ.get('MAP_EDITOR_TEST_PLANNER') != '1'
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 pytest.importorskip('PySide6')
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from map_editor.app import EditorWindow
 from map_editor.document import MapDocument
 from map_editor.overlays import plan_layers
 from map_editor.parameters import METADATA_KEY, PlannerParameters
+
+
+@pytest.fixture(autouse=True)
+def dismiss_readiness_report(monkeypatch):
+    monkeypatch.setattr(QMessageBox, 'information', lambda *args: None)
 
 
 def wait_for_job(window):
@@ -65,17 +70,35 @@ def test_full_planning_edit_preview_save_loop(tmp_path):
             assert np.all((coords >= 0) & (coords < 520)), name
             if name != 'Track Boundaries':
                 assert document.free_mask()[coords[:, 1], coords[:, 0]].all(), name
+        # Configure both independent partitions using the freshly generated data.
+        window.control_tabs.setCurrentIndex(1)
+        panel = window.sector_panel
+        count = len(document.plan['global_traj_wpnts_iqp']['wpnts'])
+        panel.add_boundary(count // 3)
+        panel.scaling.setValue(.3)
+        panel.kind.setCurrentIndex(1)
+        panel.add_boundary(2 * count // 3)
+        panel.spline.setValue(10)
+        panel.allowed.setChecked(True)
+        assert document.sectors['speed'].sections[1]['start'] == count // 3
+        assert document.sectors['overtaking'].sections[1]['start'] == 2 * count // 3
         document.path = tmp_path / 'loop/loop.yaml'
         assert window.save()
         assert not window.plan_pending and not document.dirty
         reloaded = MapDocument.load(document.path)
         assert reloaded.plan_current
+        assert not reloaded.sector_issues()
+        assert reloaded.sectors['speed'].sections[1]['scaling'] == .3
+        assert reloaded.sectors['overtaking'].sections[1]['ot_flag']
+        from map_editor.readiness import validate_saved_map
+        assert validate_saved_map(reloaded).sim_ready
         messages = read_global_waypoints(str(document.path.parent))
         assert len(messages) == 9
         assert len(messages[5].wpnts) > 100
         assert not list(tmp_path.rglob('map_centerline*.csv'))
     finally:
         window.document.saved_fingerprint = window.document.fingerprint
+        window.document.saved_sector_fingerprint = window.document.sector_fingerprint
         window.plan_pending = False
         window.close()
         application.processEvents()
