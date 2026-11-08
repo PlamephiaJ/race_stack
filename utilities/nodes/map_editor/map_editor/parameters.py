@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 import shutil
 
+import numpy as np
 import yaml
 
 from .document import atomic_bytes
@@ -59,7 +60,8 @@ def section_for(group):
 
 
 class PlannerParameters:
-    def __init__(self, values=None):
+    def __init__(self, values=None, vehicle=None):
+        self.vehicle = deepcopy(vehicle)
         self.values = {p.key: p.default for p in PARAMETERS}
         if values is not None:
             unknown = set(values) - BY_KEY.keys()
@@ -67,6 +69,20 @@ class PlannerParameters:
                 raise ValueError('Unknown planner parameters: ' + ', '.join(sorted(unknown)))
             self.values.update(deepcopy(values))
         self.validate()
+
+    def for_vehicle(self, directory, defaults=None):
+        from .vehicles import vehicle_settings
+        values = deepcopy(self.values)
+        if defaults is not None:
+            for key in values:
+                if key.startswith('veh_params.'):
+                    values[key] = defaults.values[key]
+        overrides, vehicle = vehicle_settings(directory)
+        values.update(overrides)
+        # Keep the operator's existing additional clearance for wider vehicles.
+        for key in ('safety_width', 'safety_width_sp'):
+            values[key] = max(values[key], values['veh_params.width'])
+        return PlannerParameters(values, vehicle)
 
     @classmethod
     def from_config(cls, directory):
@@ -89,7 +105,8 @@ class PlannerParameters:
 
     @classmethod
     def from_profile(cls, profile, defaults=None):
-        if not isinstance(profile, dict) or set(profile) != {'version', 'parameters'}:
+        if (not isinstance(profile, dict) or not {'version', 'parameters'} <= set(profile)
+                or set(profile) - {'version', 'parameters', 'vehicle'}):
             raise ValueError('Expected planner profile with version and parameters fields.')
         if type(profile['version']) is not int or profile['version'] != 1:
             raise ValueError('Unsupported planner profile version (expected 1).')
@@ -97,11 +114,14 @@ class PlannerParameters:
             raise ValueError('Planner profile parameters must be a mapping.')
         values = deepcopy(defaults.values) if defaults is not None else {}
         values.update(profile['parameters'])
-        return cls(values)
+        return cls(values, profile.get('vehicle'))
 
     def profile(self):
         self.validate()
-        return {'version': 1, 'parameters': deepcopy(self.values)}
+        result = {'version': 1, 'parameters': deepcopy(self.values)}
+        if self.vehicle is not None:
+            result['vehicle'] = deepcopy(self.vehicle)
+        return result
 
     def validate(self):
         for parameter in PARAMETERS:
@@ -127,6 +147,26 @@ class PlannerParameters:
         for key in ('safety_width', 'safety_width_sp'):
             if self.values[key] < width:
                 raise ValueError(f'{key} must be at least the vehicle width ({width:g} m).')
+        if self.vehicle is not None:
+            required = {'name', 'speed_limit', 'curvature_limit', 'acceleration_limit',
+                        'deceleration_limit', 'model_speed', 'vesc_speed'}
+            if not isinstance(self.vehicle, dict) or set(self.vehicle) != required:
+                raise ValueError('Invalid saved vehicle settings.')
+            name = self.vehicle['name']
+            if not isinstance(name, str) or not name or Path(name).name != name or name in ('.', '..'):
+                raise ValueError('Invalid vehicle name.')
+            for key in required - {'name'}:
+                value = self.vehicle[key]
+                if key == 'vesc_speed' and value is None:
+                    continue
+                if type(value) not in (float, int) or not math.isfinite(value) or value <= 0:
+                    raise ValueError(f'Invalid vehicle {key}.')
+            for parameter, key in (('veh_params.v_max', 'speed_limit'),
+                                   ('veh_params.curvlim', 'curvature_limit')):
+                # Qt displays six decimal places; permit only rounding noise.
+                if self.values[parameter] > self.vehicle[key] + 0.00000051:
+                    raise ValueError(f'{parameter} exceeds {name} limit {self.vehicle[key]:.6f}. '
+                                     'Choose planner defaults for a custom vehicle configuration.')
 
     def export(self, path):
         atomic_bytes(path, yaml.safe_dump(self.profile(), sort_keys=False).encode())
@@ -164,9 +204,25 @@ class PlannerParameters:
         for key in ('ggv_file', 'ax_max_machines_file'):
             if not (destination / 'veh_dyn_info' / self.values[key]).is_file():
                 raise ValueError(f'Missing dynamics CSV: {self.values[key]} (in veh_dyn_info)')
+        if self.vehicle is not None:
+            self._cap_longitudinal_dynamics(destination)
         ros_path = destination / 'global_planner_params.yaml'
         ros_config = yaml.safe_load(ros_path.read_text())
         ros_config['global_planner']['ros__parameters'].update(
             {key: self.values[key] for key in ('safety_width', 'safety_width_sp', 'reverse_mapping')})
         atomic_bytes(ros_path, yaml.safe_dump(ros_config, sort_keys=False).encode())
         return destination
+
+    def _cap_longitudinal_dynamics(self, destination):
+        acceleration = self.vehicle['acceleration_limit']
+        braking = self.vehicle['deceleration_limit']
+        for key, columns, limit in (('ggv_file', 3, min(acceleration, braking)),
+                                    ('ax_max_machines_file', 2, acceleration)):
+            path = destination / 'veh_dyn_info' / self.values[key]
+            data = np.loadtxt(path, delimiter=',', comments='#', ndmin=2)
+            if (data.shape[1] != columns or len(data) < 2 or not np.isfinite(data).all()
+                    or np.any(data[:, 1:] <= 0) or np.any(data[:, 0] < 0)
+                    or np.any(np.diff(data[:, 0]) <= 0)):
+                raise ValueError(f'Invalid dynamics CSV: {self.values[key]}')
+            data[:, 1] = np.minimum(data[:, 1], limit)
+            np.savetxt(path, data, delimiter=',', fmt='%.12g')

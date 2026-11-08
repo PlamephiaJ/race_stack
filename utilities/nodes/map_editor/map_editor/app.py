@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDockWidget,
     QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSpinBox,
-    QPlainTextEdit, QTabWidget, QVBoxLayout, QWidget,
+    QPlainTextEdit, QScrollArea, QTabWidget, QVBoxLayout, QWidget,
 )
 import yaml
 
@@ -224,6 +224,21 @@ class EditorWindow(QMainWindow):
         layout.addWidget(hint)
         layout.addWidget(QLabel('Global Planner — offline'))
         planning = QFormLayout()
+        self.vehicle_choice = QComboBox()
+        self.vehicle_choice.addItem('Global Planner defaults / custom', None)
+        try:
+            for path in sorted(planner_config().parent.glob('*/car_model.yaml')):
+                self.vehicle_choice.addItem(path.parent.name, path.parent.name)
+        except (ImportError, LookupError):
+            pass
+        self.vehicle_choice.currentIndexChanged.connect(self._vehicle_changed)
+        planning.addRow('Vehicle', self.vehicle_choice)
+        self.reload_vehicle = QPushButton('Reload selected vehicle from files')
+        self.reload_vehicle.clicked.connect(self._vehicle_changed)
+        planning.addRow(self.reload_vehicle)
+        self.vehicle_status = QLabel()
+        self.vehicle_status.setWordWrap(True)
+        planning.addRow(self.vehicle_status)
         self.safety = real_spin(.7, .05, 20., 6)
         self.safety_sp = real_spin(.7, .05, 20., 6)
         planning.addRow('Safety width (m)', self.safety)
@@ -256,7 +271,10 @@ class EditorWindow(QMainWindow):
             layout.addWidget(check)
         layout.addStretch()
         self.control_tabs = QTabWidget()
-        self.control_tabs.addTab(widget, 'Map / Planner')
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(widget)
+        self.control_tabs.addTab(scroll, 'Map / Planner')
         self.sector_panel = SectorPanel(self)
         self.control_tabs.addTab(self.sector_panel, 'Sectors')
         self.control_tabs.currentChanged.connect(self.mode_changed)
@@ -333,6 +351,43 @@ class EditorWindow(QMainWindow):
             self.safety.setValue(values['safety_width'])
             self.safety_sp.setValue(values['safety_width_sp'])
             self.reverse.setChecked(values['reverse_mapping'])
+        vehicle = self.planner_parameters.vehicle
+        name = vehicle['name'] if vehicle else None
+        with QSignalBlocker(self.vehicle_choice):
+            index = self.vehicle_choice.findData(name)
+            if index < 0:
+                self.vehicle_choice.addItem(name + ' (saved snapshot)', name)
+                index = self.vehicle_choice.count() - 1
+            self.vehicle_choice.setCurrentIndex(index)
+        self.reload_vehicle.setEnabled(vehicle is not None)
+        if vehicle:
+            vesc = f"{vehicle['vesc_speed']:.3f}" if vehicle['vesc_speed'] is not None else 'not configured'
+            self.vehicle_status.setText(
+                f"{name} snapshot: {values['veh_params.mass']:g} kg, {values['veh_params.width']:g} m wide.\n"
+                f"Speed {values['veh_params.v_max']:.3f} m/s (model {vehicle['model_speed']:g}; VESC {vesc}).\n"
+                f"Longitudinal limits +{vehicle['acceleration_limit']:g} / −{vehicle['deceleration_limit']:g} m/s². "
+                'Length, drag and lateral GGV remain planner settings.')
+        else:
+            self.vehicle_status.setText('Vehicle values come from the planner INI / saved custom settings.')
+
+    def _vehicle_changed(self, _index=None):
+        if self.document is None:
+            return
+        try:
+            name = self.vehicle_choice.currentData()
+            if name is None:
+                values = dict(self.planner_parameters.values)
+                for key in values:
+                    if key.startswith('veh_params.'):
+                        values[key] = self.project_parameters.values[key]
+                parameters = PlannerParameters(values)
+            else:
+                parameters = self.planner_parameters.for_vehicle(
+                    planner_config().parent / name, self.project_parameters)
+            self.apply_planner_parameters(parameters)
+        except (OSError, ValueError, KeyError, TypeError, ImportError, LookupError, yaml.YAMLError) as error:
+            self._sync_parameter_controls()
+            self.error(f'Could not load vehicle settings:\n{error}')
 
     def _basic_parameters_changed(self, _value=None):
         if self.document is None:
@@ -340,7 +395,7 @@ class EditorWindow(QMainWindow):
         values = dict(self.planner_parameters.values, safety_width=self.safety.value(),
                       safety_width_sp=self.safety_sp.value(), reverse_mapping=self.reverse.isChecked())
         try:
-            self.apply_planner_parameters(PlannerParameters(values))
+            self.apply_planner_parameters(PlannerParameters(values, self.planner_parameters.vehicle))
         except ValueError as error:
             self._sync_parameter_controls()
             self.error(str(error))
@@ -348,7 +403,7 @@ class EditorWindow(QMainWindow):
     def apply_planner_parameters(self, parameters, record=False):
         parameters.validate()
         if (not record and METADATA_KEY not in self.document.metadata
-                and parameters.values == self._document_parameters(self.document).values):
+                and parameters.profile() == self._document_parameters(self.document).profile()):
             return
         self.canvas.cancel_gesture()
         metadata = deepcopy(self.document.metadata)

@@ -102,6 +102,42 @@ ros2 run map_editor map_editor --map /path/to/my_track/my_track.yaml
 因此窗口不重复显示无效的 `width_opt`。`rate`、`show_plots` 和仅用于 mintime 的参数不用于
 当前离线流程，窗口中不提供这些字段。
 
+### 按车辆配置规划（BLUE / NUC 等）
+
+在右侧 **Map / Planner → Global Planner — offline → Vehicle** 选择车辆。
+下拉列表自动查找 `stack_master/config/*/car_model.yaml`，例如 BLUE、NUC5、NUC6、NUC10。
+选择后点击 **Generate trajectories**，后台优化器会使用该车辆的参数快照。
+**Global Planner defaults / custom** 恢复项目 INI 的车辆参数；采样、平滑、安全宽度和所选
+动力学文件保留原设置。选车时安全宽度不会小于新车宽。
+
+| 规划输入 | 来源和处理 |
+| --- | --- |
+| 质量、宽度 | `car_model.yaml` 的 `m`、`width_m` |
+| 最高速度 | 取模型 `v_max`、VESC 正向 ERPM 上限换算值、独立 `actuation_manager.speed_max` 的最小值 |
+| 曲率上限 | 取 `1/min_radius_curv_m`、`tan(max_steering_angle)/wheelbase` 与执行器双向转角限制换算值的最小值 |
+| 纵向加速、减速 | 模型 `a_max`、`abs(a_min)` 与执行器对应限制取最小值；限制临时 CSV 中的纵向能力 |
+| 车长、气动阻力 | 模型没有等价字段，选车时使用项目 INI 的值；可在参数窗口继续调整 |
+| 轮胎横向能力 | 沿用选定 GGV 的横向列，需要使用适合实车和地面的标定值 |
+
+VESC 换算使用 `ERPM = gain * speed + offset`，即正向速度上限
+`(speed_max - speed_to_erpm_offset) / speed_to_erpm_gain`，区分驱动器的 ERPM 和
+执行器管理器的 m/s。BLUE 当前 23250 ERPM、增益 4176.30、offset 0，对应约 **5.567 m/s**，
+即使模型的 `v_max` 为 10 m/s，选择 BLUE 后也使用较低的有效上限。
+缺少 VESC 文件时使用模型限制，界面会显示 VESC 未配置；存在但损坏时报告错误，不静默忽略。
+
+规划前会复制原配置：驱动加速表的加速度列按有效加速限制裁剪；GGV 的纵向列同时用于加速和
+制动，因此按有效加、减速限制中更小者裁剪。横向列和速度采样保留。`C_d`、`C_acc` 等控制器
+模型系数不能直接替代规划器的气动阻力或轮胎表，不作混用。原 INI、CSV、VESC 均不被改写。
+
+车辆名称、有效数值和约束保存在地图 YAML 的 `map_editor_planner` 中，也随参数预设导入/导出。
+重新打开使用保存的快照，不会因为项目 YAML 变化而悄悄改变已规划地图；如需更新，点击
+**Reload selected vehicle from files**。选车和重载可撤销，会使旧轨迹失效并暂停 Sector 编辑。
+参数窗口可进一步降低速度、曲率；所选车辆的有效上限仍生效。选择默认/自定义模式可使用
+原有手动配置方式。
+
+此选项作用于 **Map Editor 离线规划**。直接启动原 Global Planner 节点仍使用它原来的项目配置；
+运行时车辆、控制器和仿真器仍通过原 `racecar_version` / `RACECAR_VERSION` 流程选择，需与规划车辆一致。
+
 ## Sectors：离线分段配置
 
 打开右侧 **Sectors** 页签（或选择 Sectors 工具），直接使用当前 Global Raceline。
@@ -245,6 +281,7 @@ Planner 需要一条封闭、足够宽、有内外边界的赛道。开口、孤
   在局部坐标规划，再把轨迹、朝向和 Marker 变换到 YAML 的世界坐标。
 - `overlays.py`：读取现有轨迹 JSON。
 - `parameters.py` / `parameter_dialog.py`：项目默认值读取、参数窗口、校验、预设和临时配置副本。
+- `vehicles.py`：读取车辆模型与 VESC / 执行器限制，映射到规划器支持的参数。
 
 原有 Planner 仅增加 `RACE_STACK_PLANNER_HEADLESS=1` 选择 Agg 后端，
 以及中间 CSV 目录与优化器适配器的可选接口。旧调用默认行为不变，

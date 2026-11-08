@@ -116,14 +116,17 @@ def test_parameter_snapshot_invalidation_and_effective_speed_limit(tmp_path):
     document.commit(pixels)
     window.set_document(document)
     try:
+        window.vehicle_choice.setCurrentIndex(window.vehicle_choice.findData('BLUE'))
+        vehicle = window.planner_parameters.vehicle
+        assert vehicle['name'] == 'BLUE'
         values = dict(window.planner_parameters.values)
         values.update({'veh_params.v_max': 3., 'stepsize_opts.stepsize_interp_after_opt': .2,
                        'optim_opts_mincurv.iqp_iters_min': 6})
-        window.apply_planner_parameters(PlannerParameters(values))
+        window.apply_planner_parameters(PlannerParameters(values, vehicle))
         window.start_planner()
         # Editing only a planner parameter must invalidate the running job.
         values['veh_params.v_max'] = 4.
-        window.apply_planner_parameters(PlannerParameters(values))
+        window.apply_planner_parameters(PlannerParameters(values, vehicle))
         wait_for_job(window)
         assert not errors, '\n'.join(errors) + window.logs.toPlainText()
         assert document.plan is None
@@ -142,6 +145,7 @@ def test_parameter_snapshot_invalidation_and_effective_speed_limit(tmp_path):
         assert window.save()
         loaded = MapDocument.load(document.path)
         assert loaded.metadata[METADATA_KEY]['parameters'] == window.planner_parameters.values
+        assert loaded.metadata[METADATA_KEY]['vehicle'] == vehicle
         assert loaded.plan_current
         window.set_document(loaded)
         assert window.planner_parameters.values['veh_params.v_max'] == 4.

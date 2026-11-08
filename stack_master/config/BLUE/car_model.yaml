@@ -1,4 +1,4 @@
-m: 3.39
+m: 3.42
 lf: 0.1605
 lr: 0.1605
 wheelbase: 0.321 # this is not a free parameter, it is lf + lr
@@ -23,4 +23,4 @@ tau_steer: 0.0502 # 0.15779476
 max_steering_angle: 0.4189 # Probably not used in stmpc (single_track_mpc_params.yaml) instead only in sim?
 min_radius_curv_m: 0.75 # this is technically not a free parameter, it should be wheelbase / tan(max_steering_angle)
 max_steering_velocity: 3.2
-racecar_version: NUC6
+racecar_version: BLUE

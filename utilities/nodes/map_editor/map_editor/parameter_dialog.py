@@ -1,5 +1,6 @@
 """Typed Qt controls for the parameters consumed by the offline planner."""
 from pathlib import Path
+from copy import deepcopy
 
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
@@ -66,9 +67,14 @@ class PlannerParameterDialog(QDialog):
         self.set_values(parameters)
 
     def set_values(self, parameters):
+        self.vehicle = parameters.vehicle
+        self.original_values = deepcopy(parameters.values)
         for parameter in PARAMETERS:
             value = parameters.values[parameter.key]
             editor = self.editors[parameter.key]
+            if parameter.key in ('veh_params.v_max', 'veh_params.curvlim'):
+                key = 'speed_limit' if parameter.key == 'veh_params.v_max' else 'curvature_limit'
+                editor.setMaximum(self.vehicle[key] if self.vehicle else parameter.maximum)
             if parameter.kind == 'bool':
                 editor.setChecked(value)
             elif parameter.kind == 'file':
@@ -86,10 +92,13 @@ class PlannerParameterDialog(QDialog):
                 value = editor.text().strip()
             else:
                 value = editor.value()
+                if (isinstance(editor, QDoubleSpinBox)
+                        and value == round(self.original_values[parameter.key], editor.decimals())):
+                    value = self.original_values[parameter.key]
                 if parameter.kind == 'optional_int' and value == 0:
                     value = None
             values[parameter.key] = value
-        return PlannerParameters(values)
+        return PlannerParameters(values, self.vehicle)
 
     def accept(self):
         try:

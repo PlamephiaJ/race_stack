@@ -163,3 +163,71 @@ def test_quick_parameters_are_undoable(window):
     assert not window.reverse.isChecked()
     window.undo()
     assert window.safety.value() == before
+
+
+def test_vehicle_selection_pauses_sectors_and_survives_dialog_undo_save(window, tmp_path):
+    example = Path(__file__).resolve().parents[4] / 'stack_master/maps/GLC_smile_small/GLC_smile_small.yaml'
+    window.set_document(MapDocument.load(example))
+    window.vehicle_choice.setCurrentIndex(window.vehicle_choice.findData('BLUE'))
+    parameters = window.planner_parameters
+    assert parameters.vehicle['name'] == 'BLUE'
+    from map_editor.paths import planner_config
+    import yaml
+    model = yaml.safe_load((planner_config().parent / 'BLUE/car_model.yaml').read_text())
+    assert parameters.values['veh_params.mass'] == model['m']
+    assert parameters.values['veh_params.v_max'] == pytest.approx(23250 / 4176.3)
+    assert not window.document.plan_current and not window.sector_panel.editors.isEnabled()
+    dialog = PlannerParameterDialog(parameters, window.project_parameters, window)
+    dialog.accept()
+    assert dialog.result_parameters.profile() == parameters.profile()  # Preserve full conversion precision.
+    window.apply_planner_parameters(dialog.result_parameters)
+    assert len(window.document.undo_stack) == 1  # Unchanged dialog adds no history entry.
+    old_safety = window.safety.value()
+    window.safety.setValue(old_safety + .1)
+    assert window.planner_parameters.vehicle == parameters.vehicle
+    window.undo()
+    window.undo()
+    assert window.planner_parameters.vehicle is None and window.document.plan_current
+    window.redo()
+    assert window.planner_parameters.vehicle['name'] == 'BLUE'
+    path = window.document.save(tmp_path / 'blue_track/blue_track.yaml')
+    window.set_document(MapDocument.load(path))
+    assert window.vehicle_choice.currentData() == 'BLUE'
+    assert window.planner_parameters.vehicle == parameters.vehicle
+    window.vehicle_choice.setCurrentIndex(window.vehicle_choice.findData('NUC5'))
+    assert window.planner_parameters.values['veh_params.mass'] == 2.783
+    window.vehicle_choice.setCurrentIndex(0)
+    assert window.planner_parameters.vehicle is None
+    assert window.planner_parameters.values['veh_params.mass'] == 3.518
+
+
+def test_vehicle_reload_error_keeps_previous_selection(window, monkeypatch):
+    import map_editor.vehicles as vehicles
+    window.vehicle_choice.setCurrentIndex(window.vehicle_choice.findData('BLUE'))
+    before = window.planner_parameters.profile()
+    errors = []
+    window.error = errors.append
+
+    def fail(_directory):
+        raise ValueError('invalid wheelbase')
+
+    monkeypatch.setattr(vehicles, 'vehicle_settings', fail)
+    window.vehicle_choice.setCurrentIndex(window.vehicle_choice.findData('NUC6'))
+    assert errors and 'wheelbase' in errors[-1]
+    assert window.planner_parameters.profile() == before
+    assert window.vehicle_choice.currentData() == 'BLUE'
+
+
+def test_vehicle_reload_updates_snapshot_only_when_requested(window, monkeypatch):
+    import map_editor.vehicles as vehicles
+    window.vehicle_choice.setCurrentIndex(window.vehicle_choice.findData('BLUE'))
+    old_mass = window.planner_parameters.values['veh_params.mass']
+    values, limits = vehicles.vehicle_settings(Path(__file__).resolve().parents[4] / 'stack_master/config/BLUE')
+    values['veh_params.mass'] = old_mass + .1
+    monkeypatch.setattr(vehicles, 'vehicle_settings', lambda _directory: (values, limits))
+    window._changed()
+    assert window.planner_parameters.values['veh_params.mass'] == old_mass
+    QTest.mouseClick(window.reload_vehicle, Qt.MouseButton.LeftButton)
+    assert window.planner_parameters.values['veh_params.mass'] == pytest.approx(old_mass + .1)
+    window.undo()
+    assert window.planner_parameters.values['veh_params.mass'] == old_mass
