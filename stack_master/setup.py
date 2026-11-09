@@ -3,6 +3,7 @@ import os
 from glob import glob
 
 package_name = 'stack_master'
+source_root = os.path.dirname(os.path.realpath(__file__))
 
 
 #handle the maps subfolders
@@ -12,9 +13,13 @@ for map_dir in os.listdir('maps'):
 
 #handle the config folder, which nests arbitrarily deep (e.g. config/NUC5/pacejka/<floor>/archive/*.yaml)
 config_subfolders = []
-for root, _, files in os.walk('config'):
-    if files:
-        config_subfolders.append((os.path.join('share', package_name, root), [os.path.join(root, f) for f in files]))
+# colcon symlink builds retain links to removed files in the build directory.
+# Discover the current source files even when setup.py runs from that directory.
+for root, _, files in os.walk(os.path.join(source_root, 'config')):
+    relative_root = os.path.relpath(root, source_root)
+    sources = [os.path.join(relative_root, f) for f in files if os.path.isfile(os.path.join(root, f))]
+    if sources:
+        config_subfolders.append((os.path.join('share', package_name, relative_root), sources))
 
 setup(
     name=package_name,
