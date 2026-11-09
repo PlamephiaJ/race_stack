@@ -23,7 +23,7 @@ from .document import MapDocument
 from .overlays import LAYERS, plan_layers
 from .parameter_dialog import PlannerParameterDialog
 from .parameters import METADATA_KEY, PlannerParameters
-from .paths import default_maps_root, planner_config
+from .paths import config_root, default_maps_root, planner_config
 from .qt_runtime import check_pyside_compatibility, check_xcb_dependencies, prepare_qt_environment
 from .readiness import validate_saved_map
 from .sector_panel import SectorPanel
@@ -96,13 +96,13 @@ class EditorWindow(QMainWindow):
         self.plan_pending = False
         self.parameter_warning = None
         try:
-            self.project_parameters = PlannerParameters.from_config(planner_config())
+            self.project_parameters = PlannerParameters().for_vehicle(planner_config())
         except (OSError, ValueError, KeyError, TypeError, ImportError, LookupError,
                 configparser.Error, yaml.YAMLError) as error:
             # Editing maps remains available before the ROS planner is installed.
             self.project_parameters = PlannerParameters()
-            self.parameter_warning = f'Could not load project planner defaults: {error}'
-        self.planner_parameters = PlannerParameters(self.project_parameters.values)
+            self.parameter_warning = f'Could not load selected vehicle planner configuration: {error}'
+        self.planner_parameters = PlannerParameters.from_profile(self.project_parameters.profile())
         self.actions = {}
         self._menus()
         self._library()
@@ -225,9 +225,8 @@ class EditorWindow(QMainWindow):
         layout.addWidget(QLabel('Global Planner — offline'))
         planning = QFormLayout()
         self.vehicle_choice = QComboBox()
-        self.vehicle_choice.addItem('Global Planner defaults / custom', None)
         try:
-            for path in sorted(planner_config().parent.glob('*/car_model.yaml')):
+            for path in sorted(config_root().glob('*/racecar_f110.ini')):
                 self.vehicle_choice.addItem(path.parent.name, path.parent.name)
         except (ImportError, LookupError):
             pass
@@ -343,7 +342,7 @@ class EditorWindow(QMainWindow):
     def _document_parameters(self, document):
         if METADATA_KEY in document.metadata:
             return PlannerParameters.from_profile(document.metadata[METADATA_KEY], self.project_parameters)
-        return PlannerParameters(self.project_parameters.values)
+        return PlannerParameters.from_profile(self.project_parameters.profile())
 
     def _sync_parameter_controls(self):
         values = self.planner_parameters.values
@@ -352,23 +351,25 @@ class EditorWindow(QMainWindow):
             self.safety_sp.setValue(values['safety_width_sp'])
             self.reverse.setChecked(values['reverse_mapping'])
         vehicle = self.planner_parameters.vehicle
-        name = vehicle['name'] if vehicle else None
+        name = self.planner_parameters.config_vehicle
         with QSignalBlocker(self.vehicle_choice):
             index = self.vehicle_choice.findData(name)
-            if index < 0:
+            if index < 0 and name is not None:
                 self.vehicle_choice.addItem(name + ' (saved snapshot)', name)
                 index = self.vehicle_choice.count() - 1
             self.vehicle_choice.setCurrentIndex(index)
-        self.reload_vehicle.setEnabled(vehicle is not None)
+        self.reload_vehicle.setEnabled(name is not None)
         if vehicle:
             vesc = f"{vehicle['vesc_speed']:.3f}" if vehicle['vesc_speed'] is not None else 'not configured'
             self.vehicle_status.setText(
                 f"{name} snapshot: {values['veh_params.mass']:g} kg, {values['veh_params.width']:g} m wide.\n"
                 f"Speed {values['veh_params.v_max']:.3f} m/s (model {vehicle['model_speed']:g}; VESC {vesc}).\n"
                 f"Longitudinal limits +{vehicle['acceleration_limit']:g} / −{vehicle['deceleration_limit']:g} m/s². "
-                'Length, drag and lateral GGV remain planner settings.')
+                f"Length {values['veh_params.length']:g} m; vehicle INI and dynamics tables apply.")
         else:
-            self.vehicle_status.setText('Vehicle values come from the planner INI / saved custom settings.')
+            self.vehicle_status.setText(
+                f"{name or 'Select a vehicle'}: vehicle INI / saved parameter snapshot.\n"
+                f"Length {values['veh_params.length']:g} m; no car_model hardware limits configured.")
 
     def _vehicle_changed(self, _index=None):
         if self.document is None:
@@ -376,16 +377,11 @@ class EditorWindow(QMainWindow):
         try:
             name = self.vehicle_choice.currentData()
             if name is None:
-                values = dict(self.planner_parameters.values)
-                for key in values:
-                    if key.startswith('veh_params.'):
-                        values[key] = self.project_parameters.values[key]
-                parameters = PlannerParameters(values)
-            else:
-                parameters = self.planner_parameters.for_vehicle(
-                    planner_config().parent / name, self.project_parameters)
+                raise ValueError('Select a vehicle with its own racecar_f110.ini.')
+            parameters = self.planner_parameters.for_vehicle(planner_config(name))
             self.apply_planner_parameters(parameters)
-        except (OSError, ValueError, KeyError, TypeError, ImportError, LookupError, yaml.YAMLError) as error:
+        except (OSError, ValueError, KeyError, TypeError, ImportError, LookupError,
+                configparser.Error, yaml.YAMLError) as error:
             self._sync_parameter_controls()
             self.error(f'Could not load vehicle settings:\n{error}')
 
@@ -395,12 +391,16 @@ class EditorWindow(QMainWindow):
         values = dict(self.planner_parameters.values, safety_width=self.safety.value(),
                       safety_width_sp=self.safety_sp.value(), reverse_mapping=self.reverse.isChecked())
         try:
-            self.apply_planner_parameters(PlannerParameters(values, self.planner_parameters.vehicle))
+            self.apply_planner_parameters(PlannerParameters(
+                values, self.planner_parameters.vehicle, self.planner_parameters.config_vehicle))
         except ValueError as error:
             self._sync_parameter_controls()
             self.error(str(error))
 
     def apply_planner_parameters(self, parameters, record=False):
+        if parameters.config_vehicle is None:
+            parameters = PlannerParameters(
+                parameters.values, parameters.vehicle, self.planner_parameters.config_vehicle)
         parameters.validate()
         if (not record and METADATA_KEY not in self.document.metadata
                 and parameters.profile() == self._document_parameters(self.document).profile()):
@@ -513,7 +513,9 @@ class EditorWindow(QMainWindow):
             return
         self.canvas.cancel_gesture()
         try:
-            config = planner_config()
+            if self.planner_parameters.config_vehicle is None:
+                raise ValueError('Select a vehicle with its own racecar_f110.ini.')
+            config = planner_config(self.planner_parameters.config_vehicle)
             self.job_directory = tempfile.TemporaryDirectory(prefix='race-map-editor-')
             root = Path(self.job_directory.name)
             config = self.planner_parameters.snapshot(config, root / 'config')

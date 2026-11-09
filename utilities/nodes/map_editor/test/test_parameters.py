@@ -8,7 +8,7 @@ import yaml
 
 from map_editor.parameters import PlannerParameters
 
-CONFIG = Path(__file__).resolve().parents[4] / 'stack_master/config/global_planner'
+CONFIG = Path(__file__).resolve().parents[4] / 'stack_master/config/SIM'
 
 
 def test_config_snapshot_applies_overrides_preserves_source_and_other_options(tmp_path):

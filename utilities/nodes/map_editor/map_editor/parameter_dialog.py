@@ -1,6 +1,7 @@
 """Typed Qt controls for the parameters consumed by the offline planner."""
 from pathlib import Path
 from copy import deepcopy
+import configparser
 
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
@@ -22,7 +23,7 @@ class PlannerParameterDialog(QDialog):
         self.editors = {}
         layout = QVBoxLayout(self)
         note = QLabel('Apply changes, then Generate trajectories. Settings are saved with the map.\n'
-                      'Dynamics CSV names are relative to the project configuration’s veh_dyn_info folder.')
+                      'Dynamics CSV names are relative to the selected vehicle’s veh_dyn_info folder.')
         note.setWordWrap(True)
         layout.addWidget(note)
         tabs = QTabWidget()
@@ -54,7 +55,7 @@ class PlannerParameterDialog(QDialog):
             forms[parameter.tab].addRow(parameter.label, editor)
         layout.addWidget(tabs)
         row = QHBoxLayout()
-        for title, callback in (('Load project defaults', lambda: self.set_values(self.defaults)),
+        for title, callback in (('Load vehicle defaults', self.load_vehicle_defaults),
                                 ('Import profile…', self.import_profile), ('Export profile…', self.export_profile)):
             button = QPushButton(title)
             button.clicked.connect(callback)
@@ -68,6 +69,7 @@ class PlannerParameterDialog(QDialog):
 
     def set_values(self, parameters):
         self.vehicle = parameters.vehicle
+        self.config_vehicle = parameters.config_vehicle
         self.original_values = deepcopy(parameters.values)
         for parameter in PARAMETERS:
             value = parameters.values[parameter.key]
@@ -98,7 +100,14 @@ class PlannerParameterDialog(QDialog):
                 if parameter.kind == 'optional_int' and value == 0:
                     value = None
             values[parameter.key] = value
-        return PlannerParameters(values, self.vehicle)
+        return PlannerParameters(values, self.vehicle, self.config_vehicle)
+
+    def load_vehicle_defaults(self):
+        from .paths import planner_config
+        try:
+            self.set_values(PlannerParameters().for_vehicle(planner_config(self.config_vehicle)))
+        except (OSError, ValueError, KeyError, TypeError, LookupError, configparser.Error, yaml.YAMLError) as error:
+            QMessageBox.warning(self, 'Could not load vehicle defaults', str(error))
 
     def accept(self):
         try:
@@ -112,7 +121,7 @@ class PlannerParameterDialog(QDialog):
         path, _ = QFileDialog.getOpenFileName(self, 'Import planner profile', '', 'Planner profile (*.yaml *.yml)')
         if path:
             try:
-                self.set_values(PlannerParameters.load(path, self.defaults))
+                self.set_values(PlannerParameters.load(path, self.parameters()))
             except (OSError, ValueError, TypeError, yaml.YAMLError) as error:
                 QMessageBox.warning(self, 'Could not import profile', str(error))
 

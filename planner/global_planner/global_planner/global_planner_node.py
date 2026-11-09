@@ -53,7 +53,18 @@ class GlobalPlannerNode(Node):
         self.map_resolution = None
         self.watershed = True
         self.map_info_str = ""
-        self.input_path = os.path.join(get_package_share_directory('stack_master'), 'config', 'global_planner')
+        if not self.has_parameter('racecar_version'):
+            self.declare_parameter('racecar_version', os.environ.get('RACECAR_VERSION', 'BLUE'))
+        self.racecar_version = self.get_parameter('racecar_version').value
+        if (not isinstance(self.racecar_version, str) or not self.racecar_version
+                or Path(self.racecar_version).name != self.racecar_version
+                or self.racecar_version in ('.', '..')):
+            raise ValueError(f'Invalid racecar_version: {self.racecar_version!r}')
+        self.input_path = os.path.join(
+            get_package_share_directory('stack_master'), 'config', self.racecar_version)
+        if not Path(self.input_path, 'racecar_f110.ini').is_file():
+            raise FileNotFoundError(f'Missing vehicle planner configuration: {self.input_path}/racecar_f110.ini')
+        self.get_logger().info(f'Planner vehicle: {self.racecar_version}; configuration: {self.input_path}')
         
         self.global_waypoints_pub = self.create_publisher(WpntArray, '/global_waypoints', LATCHED_QOS)
         self.global_waypoints_sp_pub = self.create_publisher(WpntArray, '/global_waypoints/shortest_path', LATCHED_QOS)

@@ -60,8 +60,11 @@ def section_for(group):
 
 
 class PlannerParameters:
-    def __init__(self, values=None, vehicle=None):
+    def __init__(self, values=None, vehicle=None, config_vehicle=None):
         self.vehicle = deepcopy(vehicle)
+        self.config_vehicle = config_vehicle
+        if self.config_vehicle is None and isinstance(vehicle, dict):
+            self.config_vehicle = vehicle.get('name')
         self.values = {p.key: p.default for p in PARAMETERS}
         if values is not None:
             unknown = set(values) - BY_KEY.keys()
@@ -70,19 +73,20 @@ class PlannerParameters:
             self.values.update(deepcopy(values))
         self.validate()
 
-    def for_vehicle(self, directory, defaults=None):
+    def for_vehicle(self, directory):
         from .vehicles import vehicle_settings
-        values = deepcopy(self.values)
-        if defaults is not None:
-            for key in values:
-                if key.startswith('veh_params.'):
-                    values[key] = defaults.values[key]
-        overrides, vehicle = vehicle_settings(directory)
-        values.update(overrides)
+        directory = Path(directory)
+        values = self.from_config(directory).values
+        vehicle = None
+        if (directory / 'car_model.yaml').is_file():
+            overrides, vehicle = vehicle_settings(directory)
+            for key in ('veh_params.v_max', 'veh_params.curvlim'):
+                overrides[key] = min(values[key], overrides[key])
+            values.update(overrides)
         # Keep the operator's existing additional clearance for wider vehicles.
         for key in ('safety_width', 'safety_width_sp'):
             values[key] = max(values[key], values['veh_params.width'])
-        return PlannerParameters(values, vehicle)
+        return PlannerParameters(values, vehicle, directory.name)
 
     @classmethod
     def from_config(cls, directory):
@@ -106,7 +110,7 @@ class PlannerParameters:
     @classmethod
     def from_profile(cls, profile, defaults=None):
         if (not isinstance(profile, dict) or not {'version', 'parameters'} <= set(profile)
-                or set(profile) - {'version', 'parameters', 'vehicle'}):
+                or set(profile) - {'version', 'parameters', 'vehicle', 'config_vehicle'}):
             raise ValueError('Expected planner profile with version and parameters fields.')
         if type(profile['version']) is not int or profile['version'] != 1:
             raise ValueError('Unsupported planner profile version (expected 1).')
@@ -114,16 +118,26 @@ class PlannerParameters:
             raise ValueError('Planner profile parameters must be a mapping.')
         values = deepcopy(defaults.values) if defaults is not None else {}
         values.update(profile['parameters'])
-        return cls(values, profile.get('vehicle'))
+        vehicle = profile.get('vehicle')
+        config_vehicle = profile.get('config_vehicle')
+        if config_vehicle is None and vehicle is None and defaults is not None:
+            config_vehicle = defaults.config_vehicle
+        return cls(values, vehicle, config_vehicle)
 
     def profile(self):
         self.validate()
         result = {'version': 1, 'parameters': deepcopy(self.values)}
+        if self.config_vehicle is not None:
+            result['config_vehicle'] = self.config_vehicle
         if self.vehicle is not None:
             result['vehicle'] = deepcopy(self.vehicle)
         return result
 
     def validate(self):
+        name = self.config_vehicle
+        if name is not None and (not isinstance(name, str) or not name
+                                 or Path(name).name != name or name in ('.', '..')):
+            raise ValueError('Invalid planner configuration vehicle.')
         for parameter in PARAMETERS:
             value = self.values[parameter.key]
             if parameter.kind == 'bool':
@@ -155,6 +169,8 @@ class PlannerParameters:
             name = self.vehicle['name']
             if not isinstance(name, str) or not name or Path(name).name != name or name in ('.', '..'):
                 raise ValueError('Invalid vehicle name.')
+            if self.config_vehicle != name:
+                raise ValueError('Planner configuration and vehicle limits must belong to the same vehicle.')
             for key in required - {'name'}:
                 value = self.vehicle[key]
                 if key == 'vesc_speed' and value is None:
@@ -166,7 +182,7 @@ class PlannerParameters:
                 # Qt displays six decimal places; permit only rounding noise.
                 if self.values[parameter] > self.vehicle[key] + 0.00000051:
                     raise ValueError(f'{parameter} exceeds {name} limit {self.vehicle[key]:.6f}. '
-                                     'Choose planner defaults for a custom vehicle configuration.')
+                                     'Check the selected vehicle configuration.')
 
     def export(self, path):
         atomic_bytes(path, yaml.safe_dump(self.profile(), sort_keys=False).encode())
@@ -179,7 +195,11 @@ class PlannerParameters:
         """Copy source configuration and write overrides only into the job's copy."""
         self.validate()
         destination = Path(destination)
-        shutil.copytree(source, destination)
+        source = Path(source)
+        destination.mkdir(parents=True)
+        for name in ('racecar_f110.ini', 'global_planner_params.yaml'):
+            shutil.copyfile(source / name, destination / name)
+        shutil.copytree(source / 'veh_dyn_info', destination / 'veh_dyn_info')
         ini = destination / 'racecar_f110.ini'
         parser = configparser.ConfigParser(interpolation=None)
         if not parser.read(ini):

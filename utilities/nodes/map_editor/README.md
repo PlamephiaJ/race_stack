@@ -74,8 +74,8 @@ ros2 run map_editor map_editor --map /path/to/my_track/my_track.yaml
 ## Global Planner 参数
 
 右侧 **Global Planner parameters…** 或 **Edit → Global Planner parameters…**
-打开参数窗口。初始值从项目的 `global_planner_params.yaml` 与 `racecar_f110.ini`
-读取，字段悬停可查看原始参数名。
+打开参数窗口。初始值从所选车辆目录 `stack_master/config/<车辆>/` 下的
+`global_planner_params.yaml` 与 `racecar_f110.ini` 读取，字段悬停可查看原始参数名。
 
 | 分类 | 可编辑参数 |
 | --- | --- |
@@ -85,16 +85,16 @@ ros2 run map_editor map_editor --map /path/to/my_track/my_track.yaml
 | Optimization / speed | IQP 最少迭代次数、允许曲率误差、动力学模型指数、速度滤波窗口 |
 | Dynamics files | `veh_dyn_info` 下的 GGV 与纵向加速度上限 CSV 文件名 |
 
-点击 **OK** 应用；**Cancel** 丢弃弹窗中的修改。**Load project defaults** 恢复编辑器启动时
-读取的项目值，**Import profile… / Export profile…** 导入或导出独立 YAML 参数预设。
+点击 **OK** 应用；**Cancel** 丢弃弹窗中的修改。**Load vehicle defaults** 重新读取当前车辆的
+规划配置，**Import profile… / Export profile…** 导入或导出独立 YAML 参数预设。
 安全宽度不得小于车宽；滤波窗口必须为正奇数，`0 / Disabled` 表示关闭。
 参数修改可用主窗口 Undo / Redo 撤销、重做。
 
 应用的参数随地图保存在 YAML 的 `map_editor_planner` 扩展字段中，重新打开会恢复；
 原有地图字段、Planner 和地图加载器的读取方式保持兼容。第一次规划成功时也会记录当次有效参数。
-新建地图或打开没有参数预设的地图会使用项目默认值。
+新建地图或打开没有参数预设的地图会使用 `RACECAR_VERSION` 指定车辆的默认值；未设置时使用 BLUE。
 每次生成把原配置和动力学 CSV 复制到临时目录，覆盖其中选定的参数，再交给原优化器使用。
-原项目配置文件不自动覆盖。若要将设置用于编辑器外的规划流程，需把相应数值同步到原配置。
+车辆配置文件不自动覆盖。若要将设置用于编辑器外的规划流程，需把相应数值同步到该车辆配置。
 
 修改地图或任何规划参数都会隐藏过期预览；生成期间继续改参数，旧快照结果会被丢弃。
 输出日志包含当次参数，便于对照实验。
@@ -105,18 +105,34 @@ ros2 run map_editor map_editor --map /path/to/my_track/my_track.yaml
 ### 按车辆配置规划（BLUE / NUC 等）
 
 在右侧 **Map / Planner → Global Planner — offline → Vehicle** 选择车辆。
-下拉列表自动查找 `stack_master/config/*/car_model.yaml`，例如 BLUE、NUC5、NUC6、NUC10。
-选择后点击 **Generate trajectories**，后台优化器会使用该车辆的参数快照。
-**Global Planner defaults / custom** 恢复项目 INI 的车辆参数；采样、平滑、安全宽度和所选
-动力学文件保留原设置。选车时安全宽度不会小于新车宽。
+下拉列表自动查找 `stack_master/config/*/racecar_f110.ini`，包含 BLUE、NUC2、NUC5、NUC6、NUC7、NUC10、SIM。
+每辆车独立持有完整规划配置，没有统一 INI 或全局回退：
+
+```text
+stack_master/config/BLUE/
+├── racecar_f110.ini            # 车长、阻力、采样、优化、动力学文件名等
+├── global_planner_params.yaml  # 安全宽度、方向和 ROS 规划参数
+└── veh_dyn_info/
+    ├── ggv.csv
+    └── ax_max_machines.csv
+```
+
+例如 BLUE 总车长填在 `stack_master/config/BLUE/racecar_f110.ini` 的 `veh_params.length`，
+单位为米，包含保险杠和车壳突出部分；不是 `wheelbase`。迁移保留原来的 `0.535`，需替换为实测值。
+选择车辆或点击 **Reload selected vehicle from files** 会读取该车辆整套配置，包括采样、
+平滑、安全宽度和动力学文件名；再点击 **Generate trajectories** 使用该车辆的独立配置快照。
+缺少所选车辆的 INI、YAML 或动力学文件时会报错，不会改用其他车辆配置。
+INI 和动力学表迁移时保留原值，不代表已完成各车标定。
+有 `car_model.yaml` 时继续应用下表中的模型/硬件约束；没有该文件的车辆直接使用自己的 INI 和 CSV。
+选车时安全宽度不会小于车宽。
 
 | 规划输入 | 来源和处理 |
 | --- | --- |
 | 质量、宽度 | `car_model.yaml` 的 `m`、`width_m` |
-| 最高速度 | 取模型 `v_max`、VESC 正向 ERPM 上限换算值、独立 `actuation_manager.speed_max` 的最小值 |
-| 曲率上限 | 取 `1/min_radius_curv_m`、`tan(max_steering_angle)/wheelbase` 与执行器双向转角限制换算值的最小值 |
+| 最高速度 | 取车辆 INI 的 `v_max`、模型 `v_max`、VESC 正向 ERPM 上限换算值、独立 `actuation_manager.speed_max` 的最小值 |
+| 曲率上限 | 取车辆 INI 的 `curvlim`、`1/min_radius_curv_m`、`tan(max_steering_angle)/wheelbase` 与执行器双向转角限制换算值的最小值 |
 | 纵向加速、减速 | 模型 `a_max`、`abs(a_min)` 与执行器对应限制取最小值；限制临时 CSV 中的纵向能力 |
-| 车长、气动阻力 | 模型没有等价字段，选车时使用项目 INI 的值；可在参数窗口继续调整 |
+| 车长、气动阻力 | 所选车辆自己的 INI；可在参数窗口继续调整 |
 | 轮胎横向能力 | 沿用选定 GGV 的横向列，需要使用适合实车和地面的标定值 |
 
 VESC 换算使用 `ERPM = gain * speed + offset`，即正向速度上限
@@ -132,11 +148,15 @@ VESC 换算使用 `ERPM = gain * speed + offset`，即正向速度上限
 车辆名称、有效数值和约束保存在地图 YAML 的 `map_editor_planner` 中，也随参数预设导入/导出。
 重新打开使用保存的快照，不会因为项目 YAML 变化而悄悄改变已规划地图；如需更新，点击
 **Reload selected vehicle from files**。选车和重载可撤销，会使旧轨迹失效并暂停 Sector 编辑。
-参数窗口可进一步降低速度、曲率；所选车辆的有效上限仍生效。选择默认/自定义模式可使用
-原有手动配置方式。
+参数窗口可进一步降低速度、曲率；所选车辆的有效上限仍生效。
+旧地图/预设中有车辆快照的继续使用该车辆；没有车辆信息的旧自定义预设使用启动时选定车辆作为配置来源。
 
-此选项作用于 **Map Editor 离线规划**。直接启动原 Global Planner 节点仍使用它原来的项目配置；
+**Map Editor 离线规划**和原 Global Planner 节点均使用车辆目录中的配置。
+ROS 启动示例：`ros2 launch stack_master planner_launch.xml racecar_version:=BLUE map_name:=latest`。
+`racecar_version` 默认读取 `RACECAR_VERSION`，未设置时为 BLUE；不存在的车辆配置直接报错。
+原 ROS 节点直接使用车辆 INI/CSV；上述模型/VESC 限制由 GUI 加载车辆时应用。
 运行时车辆、控制器和仿真器仍通过原 `racecar_version` / `RACECAR_VERSION` 流程选择，需与规划车辆一致。
+修改后重新构建 `stack_master`、`global_planner`、`map_editor` 并 source 工作空间，确保安装目录也包含新的车辆配置。
 
 ## Sectors：离线分段配置
 

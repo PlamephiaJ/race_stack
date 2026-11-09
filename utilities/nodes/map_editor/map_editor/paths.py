@@ -33,8 +33,14 @@ def default_maps_root():
         return Path.cwd() / 'maps'
 
 
-def planner_config():
+def config_root():
     root = source_stack_master()
-    if root:
-        return root / 'config/global_planner'
-    return stack_share() / 'config/global_planner'
+    return (root if root else stack_share()) / 'config'
+
+
+def planner_config(vehicle=None):
+    vehicle = vehicle if vehicle is not None else os.environ.get('RACECAR_VERSION', 'BLUE')
+    if (not isinstance(vehicle, str) or not vehicle or Path(vehicle).name != vehicle
+            or vehicle in ('.', '..')):
+        raise ValueError(f'Invalid vehicle name: {vehicle!r}')
+    return config_root() / vehicle

@@ -14,7 +14,7 @@
 | `constraints are inconsistent, no solution` | 先查宽度，再调 **Sampling / smoothing** | 按下面三步处理。降低最高速度不能解决几何无解。 |
 | `window_length` / `Singular matrix` / `not positive definite` | 地图；**Sampling / smoothing** | 检查错误小环、尖角、比例；若改过采样和平滑，恢复下表默认值重试。仍失败则保留日志排查。 |
 | `ggv has to cover ...` / `ax_max_machines has to cover ...` | **Vehicle → Maximum speed** | 降到两张动力学表都覆盖的范围；仓库默认表最多支持 `15 m/s`。 |
-| `Missing dynamics CSV` / CSV 列数、数值错误 | **Dynamics files** 及对应 CSV | 文件放在 `stack_master/config/global_planner/veh_dyn_info/`，填相对文件名。GGV 三列：速度、纵向、横向上限；驱动表两列：速度、加速度上限。 |
+| `Missing dynamics CSV` / CSV 列数、数值错误 | **Dynamics files** 及对应 CSV | 文件放在 `stack_master/config/<车辆>/veh_dyn_info/`，填相对文件名。GGV 三列：速度、纵向、横向上限；驱动表两列：速度、加速度上限。 |
 | `Curvature limit is exceeded` | 急弯预览；**Sampling / smoothing** | 试下方平滑/步长调整，检查切弯；仍超限则核对真实转弯空间，不要随意放大车辆曲率限制。 |
 | `ggv acceleration limit ... exceeded` / `machine limits ... exceeded` | **Vehicle → Maximum speed**；**Optimization / speed → Speed filter window** | 降低最高速度、将滤波设为 `0 / Disabled` 后重算；仍告警则核对动力学表。 |
 | `Minimum distance to boundaries ...` | **Track Boundaries** 图层 | 告警阈值固定为 `1 m`，窄赛道常见。检查实际车体间隙；太贴边就增加对应安全宽度后重算。 |

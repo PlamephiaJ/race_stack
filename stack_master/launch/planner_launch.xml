@@ -1,9 +1,11 @@
 <launch>
+    <arg name="racecar_version" default="$(env RACECAR_VERSION BLUE)" />
     <arg name="map_name" description="Name of the map to be created" default="latest"/>
     <let name="map_src_path" value="$(find-pkg-prefix stack_master)/../../src/race_stack/stack_master/maps/$(var map_name)" />
 
     <node pkg="global_planner" exec="global_planner" name="global_planner" output="screen">
-        <param from="$(find-pkg-share stack_master)/config/global_planner/global_planner_params.yaml" />
+        <param from="$(find-pkg-share stack_master)/config/$(var racecar_version)/global_planner_params.yaml" />
+        <param name="racecar_version" value="$(var racecar_version)" />
         <param name="map_name" value="$(var map_name)" />
     </node>
     <node pkg="rviz2" exec="rviz2" name="rviz2" args="-d $(find-pkg-share global_planner)/rviz/editor.rviz" />

@@ -23,7 +23,8 @@ def app():
 
 
 @pytest.fixture
-def window(app):
+def window(app, monkeypatch):
+    monkeypatch.setenv('RACECAR_VERSION', 'SIM')
     window = EditorWindow()
     window.set_document(MapDocument.new(200, 200, .05))
     window.resize(1400, 900)
@@ -196,9 +197,10 @@ def test_vehicle_selection_pauses_sectors_and_survives_dialog_undo_save(window, 
     assert window.planner_parameters.vehicle == parameters.vehicle
     window.vehicle_choice.setCurrentIndex(window.vehicle_choice.findData('NUC5'))
     assert window.planner_parameters.values['veh_params.mass'] == 2.783
-    window.vehicle_choice.setCurrentIndex(0)
+    window.vehicle_choice.setCurrentIndex(window.vehicle_choice.findData('SIM'))
     assert window.planner_parameters.vehicle is None
     assert window.planner_parameters.values['veh_params.mass'] == 3.518
+    assert window.planner_parameters.config_vehicle == 'SIM'
 
 
 def test_vehicle_reload_error_keeps_previous_selection(window, monkeypatch):
@@ -231,3 +233,49 @@ def test_vehicle_reload_updates_snapshot_only_when_requested(window, monkeypatch
     assert window.planner_parameters.values['veh_params.mass'] == pytest.approx(old_mass + .1)
     window.undo()
     assert window.planner_parameters.values['veh_params.mass'] == old_mass
+
+
+def test_vehicle_ini_length_reload_dialog_defaults_and_job_source(window, tmp_path, monkeypatch):
+    import configparser
+    import json
+    import shutil
+    import map_editor.app as editor_app
+    import map_editor.paths as paths
+    source = paths.config_root()
+    for name, length in (('BLUE', .61), ('NUC5', .49)):
+        directory = tmp_path / name
+        shutil.copytree(source / name, directory)
+        path = directory / 'racecar_f110.ini'
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(path)
+        values = json.loads(parser.get('GENERAL_OPTIONS', 'veh_params'))
+        values.update(length=length, g=9.7)
+        parser.set('GENERAL_OPTIONS', 'veh_params', json.dumps(values))
+        with path.open('w') as stream:
+            parser.write(stream)
+    resolve = lambda name=None: tmp_path / (name or 'BLUE')
+    monkeypatch.setattr(editor_app, 'planner_config', resolve)
+    monkeypatch.setattr(paths, 'planner_config', resolve)
+    window.vehicle_choice.setCurrentIndex(window.vehicle_choice.findData('NUC5'))
+    assert window.planner_parameters.values['veh_params.length'] == .49
+    window.vehicle_choice.setCurrentIndex(window.vehicle_choice.findData('BLUE'))
+    assert window.planner_parameters.values['veh_params.length'] == .61
+    dialog = PlannerParameterDialog(window.planner_parameters, window.project_parameters, window)
+    dialog.editors['veh_params.length'].setValue(.65)
+    dialog.load_vehicle_defaults()
+    assert dialog.parameters().values['veh_params.length'] == .61
+    assert dialog.parameters().config_vehicle == 'BLUE'
+    window.error = lambda error: pytest.fail(error)
+    window.start_planner()
+    try:
+        assert window.process is not None
+        parser.read(Path(window.job_directory.name) / 'config/racecar_f110.ini')
+        actual = json.loads(parser.get('GENERAL_OPTIONS', 'veh_params'))
+        assert actual['length'] == .61 and actual['g'] == 9.7
+    finally:
+        window.cancel_planner()
+        for _ in range(100):
+            if window.process is None:
+                break
+            QTest.qWait(50)
+        assert window.process is None
