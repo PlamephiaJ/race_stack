@@ -8,8 +8,12 @@ source_root = os.path.dirname(os.path.realpath(__file__))
 
 #handle the maps subfolders
 map_subfolders = []
-for map_dir in os.listdir('maps'):
-    map_subfolders.append((os.path.join('share', package_name, 'maps', map_dir), glob('maps/{}/*'.format(map_dir), recursive=True)))
+# Read the source tree so stale build-directory symlinks to deleted maps are ignored.
+for root, _, files in os.walk(os.path.join(source_root, 'maps')):
+    relative_root = os.path.relpath(root, source_root)
+    sources = [os.path.join(relative_root, f) for f in files if os.path.isfile(os.path.join(root, f))]
+    if sources:
+        map_subfolders.append((os.path.join('share', package_name, relative_root), sources))
 
 #handle the config folder, which nests arbitrarily deep (e.g. config/NUC5/pacejka/<floor>/archive/*.yaml)
 config_subfolders = []

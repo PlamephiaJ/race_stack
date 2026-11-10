@@ -4,6 +4,7 @@ Panels:
     Name: Displays
     Property Tree Widget:
       Expanded:
+        - /Maps1
         - /Global Options1
         - /Status1
         - /Map1
@@ -92,27 +93,73 @@ Visualization Manager:
                   {}
       Update Interval: 0
       Value: true
-    - Alpha: 0.699999988079071
-      Class: rviz_default_plugins/Map
-      Color Scheme: map
-      Draw Behind: false
+    - Class: rviz_common/Group
+      Name: Maps
       Enabled: true
-      Name: Map
-      Topic:
-        Depth: 5
-        Durability Policy: Transient Local
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /map
-      Update Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /map_updates
-      Use Timestamp: false
-      Value: true
+      Displays:
+      - Alpha: 1
+        Class: rviz_default_plugins/Map
+        Color Scheme: map
+        Draw Behind: true
+        Enabled: true
+        Name: Saved Map (edited)
+        Topic:
+          Depth: 5
+          Durability Policy: Transient Local
+          Filter size: 10
+          History Policy: Keep Last
+          Reliability Policy: Reliable
+          Value: /map
+        Update Topic:
+          Depth: 5
+          Durability Policy: Volatile
+          History Policy: Keep Last
+          Reliability Policy: Best Effort
+          Value: /map_updates
+        Use Timestamp: false
+        Value: true
+      - Alpha: 0.7
+        Class: rviz_default_plugins/Map
+        Color Scheme: map
+        Draw Behind: true
+        Enabled: false
+        Name: SLAM Map (raw)
+        Topic:
+          Depth: 5
+          Durability Policy: Transient Local
+          Filter size: 10
+          History Policy: Keep Last
+          Reliability Policy: Reliable
+          Value: /map_raw
+        Update Topic:
+          Depth: 5
+          Durability Policy: Volatile
+          History Policy: Keep Last
+          Reliability Policy: Best Effort
+          Value: /map_raw_updates
+        Use Timestamp: false
+        Value: false
+      - Alpha: 0.7
+        Class: rviz_default_plugins/Map
+        Color Scheme: map
+        Draw Behind: true
+        Enabled: false
+        Name: SLAM Map (filtered)
+        Topic:
+          Depth: 5
+          Durability Policy: Transient Local
+          Filter size: 10
+          History Policy: Keep Last
+          Reliability Policy: Reliable
+          Value: /map_filtered
+        Update Topic:
+          Depth: 5
+          Durability Policy: Volatile
+          History Policy: Keep Last
+          Reliability Policy: Best Effort
+          Value: /map_filtered_updates
+        Use Timestamp: false
+        Value: false
     - Class: rviz_default_plugins/Marker
       Enabled: true
       Name: State

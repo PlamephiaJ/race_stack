@@ -20,6 +20,7 @@ from cartographer_ros_msgs.srv import FinishTrajectory, WriteState
 from tf_transformations import euler_from_quaternion
 
 from .global_planner_utils import get_data_path
+from .map_filter import filter_occupancy_grid
 
 
 
@@ -143,20 +144,10 @@ class MappingNode(Node):
         Returns:
             None
         """
-        # Assume that map is from the occupancy grid and therefore needs to be processed
-        original_map = np.int8(self.map_occupancy_grid).reshape(self.map_height, self.map_width)
-
-        # get right shape for occupancy grid map
-        # mark unknown (-1) as occupied (100)
-        original_map = np.where(original_map == -1, 100, original_map)
-
-        # binarised map
-        bw = np.where(original_map < self.map_occupancy_grid_threshold, 255, 0)
-        bw = np.uint8(bw)
-
-        # Filtering with morphological opening
-        kernel = np.ones((self.filter_kernel_size, self.filter_kernel_size), np.uint8)
-        self.filtered_map = cv2.morphologyEx(bw, cv2.MORPH_OPEN, kernel, iterations=2)
+        self.filtered_map = filter_occupancy_grid(
+            self.map_occupancy_grid, self.map_width, self.map_height,
+            self.map_occupancy_grid_threshold, self.filter_kernel_size,
+        )
         
     def save_map(self) -> None:
         """Saves the filtered map as a PNG and YAML file in the specified directory."""       

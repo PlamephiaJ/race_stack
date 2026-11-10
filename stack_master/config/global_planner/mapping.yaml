@@ -3,3 +3,9 @@ mapping_node:
     rate: 10 # [hz]
     occupancy_grid_threshold: 10
     filter_kernel_size: 3
+
+# Keep the live visualisation filter consistent with the saved mapping output.
+map_filter:
+  ros__parameters:
+    occupancy_grid_threshold: 10
+    filter_kernel_size: 3

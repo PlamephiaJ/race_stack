@@ -45,6 +45,11 @@
       <arg name="use_vio" value="$(var use_vio)" />
       <arg name="viz_flow" value="$(var viz_flow)" />
     </include>
+
+    <!-- Visualisation only: the saved/edited map remains on /map. -->
+    <node pkg="global_planner" exec="map_filter_node" name="map_filter" output="screen">
+      <param from="$(find-pkg-share stack_master)/config/global_planner/mapping.yaml" />
+    </node>
   </group>
 
   <!-- launch frenet odom republisher (pose from TF, velocity from /state_estimation/odom) -->
