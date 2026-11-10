@@ -5,7 +5,8 @@
 # The car publishes the map, TF, scan and pose; no local map file is required.
 # Maps: saved /map (default), raw /map_raw, live filtered /map_filtered.
 # Toggle each map independently in the Maps group.
-# Localized Car Pose is the orange arrow; EKF Odometry is optional.
+# Localized Car Pose is the black arrow; EKF Odometry is optional.
+# 2D Pose Estimate publishes /initialpose for the real-car localization bridge.
 Panels:
 - Class: rviz_common/Displays
   Help Height: 78
@@ -267,7 +268,7 @@ Visualization Manager:
         Value: /car_state/pose
         Filter size: 10
       Shape: Arrow
-      Color: 255; 70; 30
+      Color: 0; 0; 0
       Alpha: 1
       Shaft Length: 0.45
       Shaft Radius: 0.06
@@ -459,6 +460,16 @@ Visualization Manager:
   - Class: rviz_default_plugins/FocusCamera
   - Class: rviz_default_plugins/Measure
     Line color: 128; 128; 0
+  - Class: rviz_default_plugins/SetInitialPose
+    Covariance x: 0.25
+    Covariance y: 0.25
+    Covariance yaw: 0.06853891909122467
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /initialpose
   Transformation:
     Current:
       Class: rviz_default_plugins/TF

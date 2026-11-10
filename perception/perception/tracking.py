@@ -453,9 +453,6 @@ class StaticDynamic(Node):
         
         self.opponent_obstacle = Opponent_state()
 
-        # ------------ Initialize main logic loop ------------
-        self.timer = self.create_timer(1/self.update_rate, self.loop)
-
         # ------------ Subscribers ------------
         self.obs_sub = self.create_subscription(
             ObstacleArray, '/perception/detection/raw_obstacles', self.obstacleCallback, 10)
@@ -464,7 +461,6 @@ class StaticDynamic(Node):
         self.cs_frenet = self.create_subscription(
             Odometry, '/car_state/frenet/odom', self.carStateCallback, 10)
         self.tf_buffer = Buffer(rclpy.duration.Duration(seconds=5))
-        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
         self.scan_sub = self.create_subscription(
             LaserScan, '/scan', self.scansCallback, 10)
 
@@ -478,7 +474,12 @@ class StaticDynamic(Node):
         if self.measuring:
             self.latency_pub = self.create_publisher(
                 Float32, '/perception/tracking/latency', 10)
-            
+
+        # Initialize callback dependencies before starting the listener, which
+        # spins this node and can execute the main timer during construction.
+        self.timer = self.create_timer(1/self.update_rate, self.loop)
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
+
         self.get_logger().info('[Tracking]: Tracking initialized')
             
     def delcare_dyn_parameters(self, param_dicts: List[dict]):

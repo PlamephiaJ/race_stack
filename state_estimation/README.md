@@ -127,6 +127,57 @@ With the ROS2 race-stack, you can currently only use Google's *cartographer* loc
 
 The localization package is launched via the aformentioned main state estimation launch file located under `state_estimation/launch/state_estimation_launch.xml`. 
 
+### RViz initial pose on the physical car
+
+In localization mode (`mapping_bool:=False`), `cartographer_initialpose` connects RViz's
+**2D Pose Estimate** tool on `/initialpose` to Cartographer. Set RViz **Fixed Frame** to
+`map`, then click at the car's position and drag along its heading. The bridge queries
+the loaded frozen map trajectory, finishes only the current active localization
+trajectory, and starts a new one using the selected pose. Watch the bridge's
+`Localization restarted as trajectory ...` log and check laser/map alignment while
+localization converges. Use this while the car is stationary and autonomous driving
+is stopped; changing the initial pose does not stop the controller.
+
+The bridge uses the same vehicle's `slam_config_path/f110_2d_loc.lua` as Cartographer.
+It converts the map pose relative to the frozen trajectory's first global pose, so a
+nonzero or rotated mapping origin is supported. The lowest frozen trajectory ID is
+selected automatically; override `reference_trajectory_id` when launching
+`state_estimation_launch.xml` to select a particular frozen trajectory. The saved
+`.pbstream` is not rewritten. The `StartTrajectory` interface accepts a pose, not
+RViz's covariance; changing covariance does not change the reset's search spread.
+See Cartographer's [service interface](https://google-cartographer-ros.readthedocs.io/en/latest/ros_api.html#services).
+
+Only localization mode launches this bridge; mapping and simulator pose resets
+retain their existing behavior. `enable_initialpose:=False` disables the bridge
+when directly launching `state_estimation_launch.xml`. Messages outside `map`, invalid
+poses, missing frozen maps, and multiple active trajectories are rejected before
+finishing anything. Rapid clicks are serialized and only the latest queued click
+is retained. If a finish/start reply is delayed beyond `service_timeout_sec`
+(default 10 s), the bridge waits for that same reply rather than sending a duplicate
+request. If the reply never arrives or a transport failure makes its outcome
+unknown, inspect `/get_trajectory_states` and restart the bridge before retrying.
+An explicit start rejection after a successful finish leaves no live localization
+trajectory; draw another initial pose to retry. Laser scans, odometry, and TF still
+need to be working for localization to converge.
+
+After building and sourcing the workspace, the existing real-car base-system launch
+enables this automatically. To inspect the subscriber:
+
+```shell
+ros2 topic info /initialpose --verbose
+```
+
+Tests (unit tests do not create ROS nodes):
+
+```shell
+PYTHONPATH="$PWD/state_estimation:$PYTHONPATH" python3 -m pytest \
+  state_estimation/test/test_cartographer_initialpose.py -q --import-mode=importlib
+# Real Cartographer, existing GLC map, isolated namespace/domain, no vehicle drivers:
+RMW_IMPLEMENTATION=rmw_fastrtps_cpp STATE_ESTIMATION_TEST_CARTOGRAPHER=1 \
+  PYTHONPATH="$PWD/state_estimation:$PYTHONPATH" \
+  python3 -m pytest state_estimation/test/test_initialpose_ros.py -q --import-mode=importlib
+```
+
 ### Parameters
 
 The parameters associated with SLAM localization can be modified in the configuration files located under `stack_master/config/[racecar_version]/slam/`, where `[racecar_version]` is the subfolder corresponding to the vehicle in question. When mapping, edit the `f110_2d.lua` (for Mapping) or `f110_2d_loc.lua` (for Localization) file.
