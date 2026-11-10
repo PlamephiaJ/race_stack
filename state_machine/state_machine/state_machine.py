@@ -1,4 +1,5 @@
 import rclpy
+import time
 from stack_master.qos import LATCHED_QOS
 import numpy as np
 from builtin_interfaces.msg import Time
@@ -68,6 +69,7 @@ class StateMachine(Node):
             self.last_valid_avoidance_wpnts = None
             self.splini_ttl_counter = 0
             self.avoidance_wpnts = None
+            self.avoidance_received_at = None
             self.create_subscription(OTWpntArray, '/planner/avoidance/otwpnts', self.avoidance_cb, 10)
 
             self.obstacles = []
@@ -139,6 +141,7 @@ class StateMachine(Node):
         if len(data.wpnts) > 0:
             self.splini_ttl_counter = int(self.params.splini_ttl * self.params.rate_hz)
             self.avoidance_wpnts = data
+            self.avoidance_received_at = time.monotonic()
         else:
         # If empty we don't overwrite the avoidance waypoints
             pass
@@ -234,6 +237,11 @@ class StateMachine(Node):
 
     @property
     def _check_availability_splini_wpts(self) -> bool:
+        if (self.avoidance_received_at is None or
+                time.monotonic() - self.avoidance_received_at > self.params.splini_ttl):
+            self.avoidance_wpnts = None
+            self.last_valid_avoidance_wpnts = None
+            return False
         if self.avoidance_wpnts is None:
             return False
         elif len(self.avoidance_wpnts.wpnts) == 0:

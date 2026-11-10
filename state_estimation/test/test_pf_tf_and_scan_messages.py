@@ -4,6 +4,7 @@ from builtin_interfaces.msg import Time
 from geometry_msgs.msg import Pose, Transform
 import numpy as np
 import tf_transformations
+from types import SimpleNamespace
 
 from state_estimation import particle_filter_utils as Utils
 from state_estimation.particle_filter import ParticleFiler
@@ -37,6 +38,39 @@ def test_fake_scan_converts_numpy_scalars_to_ros_float_fields():
     assert isinstance(scan.angle_increment, float)
     assert isinstance(scan.range_max, float)
     assert np.allclose(scan.ranges, [1.0, 2.0, 3.0])
+
+
+def test_boxed_beams_use_uniform_angles_only_for_fake_scan_visualization():
+    angles = np.array([-1.2, -1.0, -0.4, 0.0, 0.05, 0.3, 1.1], dtype=np.float32)
+    queries = []
+
+    def cast(ins, outs):
+        queries.append(ins.copy())
+        outs[:] = np.arange(len(outs)) + 1.0
+
+    publisher = _RecordingPublisher()
+    publisher.get_subscription_count = lambda: 1
+    obj = SimpleNamespace(
+        DO_VIZ=True, last_visualization_time=None, VIZ_UPDATE_PERIOD=0.2,
+        pose_pub=SimpleNamespace(get_subscription_count=lambda: 0),
+        particle_pub=SimpleNamespace(get_subscription_count=lambda: 0),
+        pub_fake_scan=publisher, ranges=np.zeros(len(angles)),
+        inferred_pose=np.array([2.0, 3.0, 0.5]),
+        laser_particles=lambda particles: particles + np.array([0.27, 0.1, 0.3]),
+        downsampled_angles=angles.copy(), viz_queries=np.zeros((len(angles), 3), dtype=np.float32),
+        viz_ranges=np.zeros(len(angles), dtype=np.float32),
+        range_method=SimpleNamespace(calc_range_many=cast),
+        laser_frame='laser', last_stamp=Time(sec=123))
+    obj.publish_scan = lambda a, r: ParticleFiler.publish_scan(obj, a, r)
+
+    ParticleFiler.visualize(obj)
+
+    scan = publisher.message
+    represented_angles = scan.angle_min + np.arange(len(scan.ranges)) * scan.angle_increment
+    assert np.allclose(queries[0][:, 2] - 0.8, represented_angles, atol=1e-6)
+    assert np.allclose(queries[0][:, :2], [2.27, 3.1])
+    assert np.array_equal(obj.downsampled_angles, angles)  # MCL keeps boxed beams
+    assert scan.header.frame_id == 'laser' and scan.header.stamp.sec == 123
 
 
 def test_odom_pose_and_static_laser_transform_reconstruct_odom_laser():

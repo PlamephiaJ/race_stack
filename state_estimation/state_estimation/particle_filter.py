@@ -396,11 +396,17 @@ class ParticleFiler(Node):
         if self.pub_fake_scan.get_subscription_count() > 0 and isinstance(self.ranges, np.ndarray):
             # generate the scan from the point of view of the inferred position for visualization
             laser_pose = self.laser_particles(self.inferred_pose[None, :])[0]
+            # LaserScan represents uniformly spaced angles. SynPF's boxed
+            # observation beams are nonuniform, so ray-cast a separate uniform
+            # set for visualization without changing the localization beams.
+            viz_angles = np.linspace(
+                np.min(self.downsampled_angles), np.max(self.downsampled_angles),
+                len(self.downsampled_angles), dtype=np.float32)
             self.viz_queries[:,0] = laser_pose[0]
             self.viz_queries[:,1] = laser_pose[1]
-            self.viz_queries[:,2] = self.downsampled_angles + laser_pose[2]
+            self.viz_queries[:,2] = viz_angles + laser_pose[2]
             self.range_method.calc_range_many(self.viz_queries, self.viz_ranges)
-            self.publish_scan(self.downsampled_angles, self.viz_ranges)
+            self.publish_scan(viz_angles, self.viz_ranges)
 
     def publish_particles(self, particles):
         # publish the given particles as a PoseArray object
