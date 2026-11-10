@@ -341,6 +341,13 @@ class ObstacleSpliner(Node):
     def _check_ot_side_possible(self, more_space) -> bool:
         # TODO make rosparam for cur_d threshold
         if abs(self.cur_d) > 0.25 and more_space != self.last_ot_side:
+            # On the first plan, choosing the side the car already occupies
+            # does not require crossing the raceline near the obstacle.
+            if not self.last_ot_side and (
+                (more_space == "left" and self.cur_d > 0)
+                or (more_space == "right" and self.cur_d < 0)
+            ):
+                return True
             self.get_logger().info("Can't switch sides, because we are not on the raceline")
             return False
         return True
@@ -559,9 +566,13 @@ class ObstacleSpliner(Node):
         return wpnts, mrks
 
     def _obs_filtering(self, obstacles: ObstacleArray) -> List[Obstacle]:
-        # Only use obstacles that are within a threshold of the raceline, else we don't care about them
-        obs_on_traj = [obs for obs in obstacles.obstacles if abs(
-            obs.d_center) < self.obs_traj_tresh]
+        # An obstacle can block the raceline even when its center is outside
+        # the corridor. Use its lateral extent when deciding whether to evade.
+        obs_on_traj = [
+            obs for obs in obstacles.obstacles
+            if obs.d_right < self.obs_traj_tresh
+            and obs.d_left > -self.obs_traj_tresh
+        ]
 
         # Only use obstacles that within self.lookahead in front of the car
         close_obs = []

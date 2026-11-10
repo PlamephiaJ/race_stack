@@ -323,7 +323,10 @@ class ParticleFiler(Node):
             rotation = tf_transformations.quaternion_from_matrix(map_odom_matrix)
 
             t = TransformStamped()
-            t.header.stamp = stamp
+            # This map-to-odom correction composes with live odometry. Stamp
+            # the TF when published so newer scans need not wait for the next
+            # slow MCL update; keep the pose observation at its scan stamp.
+            t.header.stamp = self.get_clock().now().to_msg()
             t.header.frame_id = 'map'
             t.child_frame_id = self.odom_frame
             t.transform.translation.x = translation[0]
@@ -439,22 +442,34 @@ class ParticleFiler(Node):
     def process_scan(self):
         if not self.scan_queue:
             return
-        msg = self.scan_queue[0]
-        stamp = Time.from_msg(msg.header.stamp)
-        if self.last_stamp is not None and stamp <= Time.from_msg(self.last_stamp):
-            self.scan_queue.popleft()
+        # Keep localization near real time when scans arrive faster than MCL
+        # updates. Motion is integrated between the processed scan timestamps.
+        last_error = None
+        selected = None
+        for msg in reversed(self.scan_queue):
+            stamp = Time.from_msg(msg.header.stamp)
+            if self.last_stamp is not None and stamp <= Time.from_msg(self.last_stamp):
+                break
+            laser_frame = msg.header.frame_id.lstrip('/')
+            try:
+                odom_base = self.tf_buffer.lookup_transform(
+                    self.odom_frame, self.base_frame, stamp)
+                base_laser = self.tf_buffer.lookup_transform(
+                    self.base_frame, laser_frame, stamp)
+            except TransformException as error:
+                last_error = error
+                continue
+            selected = (msg, laser_frame, odom_base, base_laser)
+            break
+        if selected is None:
+            if last_error is not None:
+                self.get_logger().warning(
+                    f'Waiting for odometry/laser TF at scan time: {last_error}',
+                    throttle_duration_sec=2.0)
+            else:
+                self.scan_queue.clear()
             return
-        laser_frame = msg.header.frame_id.lstrip('/')
-        try:
-            odom_base = self.tf_buffer.lookup_transform(
-                self.odom_frame, self.base_frame, stamp)
-            base_laser = self.tf_buffer.lookup_transform(
-                self.base_frame, laser_frame, stamp)
-        except TransformException as error:
-            self.get_logger().warning(
-                f'Waiting for odometry/laser TF at scan time: {error}',
-                throttle_duration_sec=2.0)
-            return
+        msg, laser_frame, odom_base, base_laser = selected
 
         if self.pending_initial_pose is not None:
             map_base = Utils.pose_to_matrix(self.pending_initial_pose)
@@ -469,7 +484,11 @@ class ParticleFiler(Node):
             self.pending_initial_pose = None
             self.last_pose = None
 
-        self.scan_queue.popleft()
+        # Discard the selected scan and older ones; keep any newer scans that
+        # are still waiting for their odometry TF.
+        while self.scan_queue:
+            if self.scan_queue.popleft() is msg:
+                break
         self.laser_frame = laser_frame
         self.odom_to_base_matrix = Utils.transform_to_matrix(odom_base.transform)
         self.base_to_laser_matrix = Utils.transform_to_matrix(base_laser.transform)
