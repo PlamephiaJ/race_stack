@@ -9,7 +9,8 @@ from rcl_interfaces.msg import ParameterDescriptor, ParameterType, FloatingPoint
 from rclpy.parameter import Parameter
 import rclpy.time, rclpy.duration
 
-from tf2_ros import Buffer, TransformListener
+from tf2_ros import Buffer, TransformException, TransformListener
+from collections import deque
 import time
 import threading
 from frenet_conversion.frenet_converter import FrenetConverter
@@ -132,6 +133,9 @@ class Detect(Node):
             description="standard deviation of the noise of the lidar ranges in m"))
         self.declare_parameter("min_2_points_dist", 0.01, descriptor=ParameterDescriptor(
             description="minimum distance between two points"))
+        if not self.has_parameter("tf_wait_timeout"):
+            self.declare_parameter("tf_wait_timeout", 0.2, descriptor=ParameterDescriptor(
+                description="maximum time in seconds to retain a scan awaiting its map transform"))
 
         # --- Tunable params ---
         self.rate = self.get_parameter(
@@ -142,6 +146,10 @@ class Detect(Node):
             "sigma").get_parameter_value().double_value
         self.min_2_points_dist = self.get_parameter(
             "min_2_points_dist").get_parameter_value().double_value
+        self.tf_wait_timeout = self.get_parameter(
+            "tf_wait_timeout").get_parameter_value().double_value
+        if not math.isfinite(self.tf_wait_timeout) or self.tf_wait_timeout <= 0.0:
+            raise ValueError('tf_wait_timeout must be a finite positive number of seconds')
 
         # --- dyn params ---
         self.max_obs_size = 0.5
@@ -179,14 +187,14 @@ class Detect(Node):
         # ego car s position
         self.car_s = 0
 
-        # raw scans from the lidar
-        self.scans: LaserScan = LaserScan()
+        # Keep scans until TF covers their timestamps, without blocking callbacks.
+        self.pending_scans = deque(maxlen=10)
 
         self.current_stamp = None
         self.tracked_obstacles = []
 
         self.tf_buffer = Buffer(rclpy.duration.Duration(seconds=5))
-        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=False)
         self.path_needs_update = False
 
         # self.converter = self.initialize_converter()
@@ -217,7 +225,14 @@ class Detect(Node):
     # --- Callback functions ---
 
     def laserCb(self, msg):
-        self.scans = msg
+        if not msg.header.frame_id or not msg.ranges:
+            return
+        with self.lock:
+            if len(self.pending_scans) == self.pending_scans.maxlen:
+                self.get_logger().warn(
+                    'Detection scan queue full; dropping oldest scan awaiting TF',
+                    throttle_duration_sec=1.0)
+            self.pending_scans.append((msg, self.car_s, time.monotonic()))
 
     def pathCb(self, data):
         # Initial calls: initialize the converter
@@ -270,7 +285,8 @@ class Detect(Node):
         self.path_needs_update = False
 
     def carStateCb(self, data: Odometry):
-        self.car_s = data.pose.pose.position.x
+        with self.lock:
+            self.car_s = data.pose.pose.position.x
     
     def dyn_param_cb(self, params: List[Parameter]):
         """
@@ -368,7 +384,7 @@ class Detect(Node):
 
         div_const = np.sin(d_phi) / np.sin(l - d_phi)
         for i in range(1, len(cloudPoints_list)):
-            curr_range = self.scans.ranges[i]
+            curr_range = scans.ranges[i]
             d_max = curr_range * div_const + 3 * sigma
 
             # Distance between points does not change in map frame or laser frame.
@@ -634,26 +650,46 @@ class Detect(Node):
         self.obstacles_marker_pub.publish(MarkerArray(markers=markers_array))
         Obstacle.current_id = 0
 
+    def next_transformed_scan(self):
+        """Return the oldest scan whose timestamp TF covers, retrying pending scans."""
+        with self.lock:
+            while self.pending_scans:
+                scans, car_s, received_at = self.pending_scans[0]
+                try:
+                    # No blocking timeout: TF subscriptions share the main executor.
+                    transform = self.tf_buffer.lookup_transform(
+                        target_frame='map', source_frame=scans.header.frame_id,
+                        time=rclpy.time.Time.from_msg(scans.header.stamp))
+                except TransformException as exc:
+                    if time.monotonic() - received_at < self.tf_wait_timeout:
+                        return None
+                    self.pending_scans.popleft()
+                    self.get_logger().warn(
+                        f"Dropping scan from '{scans.header.frame_id}' after waiting "
+                        f"{self.tf_wait_timeout:.3f} s for its map transform: {exc}",
+                        throttle_duration_sec=1.0)
+                    continue
+                self.pending_scans.popleft()
+                if time.monotonic() - received_at >= self.tf_wait_timeout:
+                    self.get_logger().warn(
+                        'Dropping stale detection scan', throttle_duration_sec=1.0)
+                    continue
+                return scans, car_s, transform
+        return None
+
     def loop(self):
-        if self.converter is None or self.scans is None or self.track_length is None:
+        if self.converter is None or self.track_length is None:
+            return
+
+        sample = self.next_transformed_scan()
+        if sample is None:
             return
         
         if self.measuring:
             start_time = time.perf_counter()
 
-        #Sample ROS data
-        # with self.lock:
-        scans = self.scans
-        car_s = self.car_s
-        self.current_stamp = self.get_clock().now().to_msg()
-        try:
-            transform = self.tf_buffer.lookup_transform(target_frame='map', 
-                                                        source_frame=self.scans.header.frame_id, 
-                                                        time=self.scans.header.stamp, 
-                                                        timeout=rclpy.duration.Duration(seconds=0.03))
-        except Exception as e:
-            self.get_logger().warn(f"Could not transform between 'map' and '{scans.header.frame_id}': {e}")
-            transform = None
+        scans, car_s, transform = sample
+        self.current_stamp = scans.header.stamp
 
         objects_pointcloud_list = self.scans2ObsPointCloud(scans=scans, car_s=car_s, t=transform)
         current_obstacles = self.obsPointClouds2obsArray(objects_pointcloud_list)
@@ -672,16 +708,16 @@ class Detect(Node):
 def main():
     rclpy.init()
     detect = Detect()
-    executor = rclpy.executors.MultiThreadedExecutor()
+    executor = rclpy.executors.MultiThreadedExecutor(num_threads=2)
     executor.add_node(detect)
     try:
         executor.spin()
     except KeyboardInterrupt:
         detect.get_logger().info("KeyboardInterrupt")
-
-
-    detect.destroy_node()
-    rclpy.shutdown()
+    finally:
+        executor.shutdown()
+        detect.destroy_node()
+        rclpy.shutdown()
 
 
 # if __name__ == '__main__':

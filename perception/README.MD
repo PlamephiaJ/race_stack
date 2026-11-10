@@ -45,6 +45,7 @@ This is a brief explanation of parameters, which are not dynamically reconfigura
 - `lambda`: The minimum reliable detection angle in `degrees`.
 - `sigma`: The standard deviation for the noise of the LiDAR ranges in `meters`.
 - `min_2_points_dist`: The minimum distance between two LiDAR points. 
+- `tf_wait_timeout`: Maximum time in seconds to retain a scan awaiting its `map` transform (default: `0.2`, set at startup). Detection queues at most 10 scans and retries without blocking TF callbacks. Expired scans or queue overflow produce throttled warnings. A TF failure does not publish an empty obstacle array; successful results carry the original scan timestamp.
 
 ### Opponent Tracking
 - `rate`: The rate at which the node is running.
