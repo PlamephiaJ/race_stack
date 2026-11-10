@@ -40,6 +40,8 @@ services:
     command: ["/bin/bash", "-lc", "source /opt/ros/humble/setup.bash && exec ros2 run rmw_zenoh_cpp rmw_zenohd"]
     restart: unless-stopped
     runtime: nvidia
+    group_add:
+      - "44" # Jetson video devices, including /dev/nvmap and /dev/nvhost-gpu
     deploy:
       resources:
         reservations:

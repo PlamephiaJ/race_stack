@@ -123,7 +123,26 @@ ros2 launch state_estimation ukf_node_launch.py
 
 ## Localization ##
 
-With the ROS2 race-stack, you can currently only use Google's *cartographer* localization framework outlined [here](https://google-cartographer-ros.readthedocs.io/en/latest/) [see our paper for reference]. 
+GPU SynPF (`loc_algorithm:=synpf`) is the default. Choose `loc_algorithm:=pf`
+for the original GPU PF or `loc_algorithm:=cartographer` (legacy alias `slam`) in the
+main state-estimation launch, `base_system_launch.xml`,
+`mapping_launch.xml`, or `bag_replay_launch.xml`. Omitting `loc_algorithm` selects
+`synpf`; explicit launch arguments select another backend. Unknown values fail at startup.
+
+Both GPU particle filters live in this package and require CUDA RangeLibc, with
+no CPU fallback. `synpf` ports ForzaETH's TUM/AMCL/arc models, boxed-beam sampling,
+normalized sensor mixture and map constraints; `pf` retains the `vtc26_ws` model.
+Both use PNG/YAML maps without a pbstream, keep the existing EKF and TF/car-state
+interfaces, and use slam_toolbox in mapping mode. The existing filtered-map
+export is shared; only Cartographer exports a pbstream.
+See [PF setup and behavior](PARTICLE_FILTER.md).
+
+SynPF settings are in `stack_master/config/synpf.yaml`, legacy PF settings in
+`stack_master/config/particle_filter.yaml`, and mapping settings in
+`stack_master/config/slam_toolbox.yaml`. The state-estimation launch also accepts
+`synpf_config`, `pf_config` and `slam_toolbox_config` to select alternate files. The simulator
+continues to publish its ground-truth pose; backend selection applies to the
+physical car and bag replay.
 
 The localization package is launched via the aformentioned main state estimation launch file located under `state_estimation/launch/state_estimation_launch.xml`. 
 

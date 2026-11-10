@@ -107,8 +107,18 @@ RUN test -f /tmp/race_stack_optimizer/setup.py && \
       /tmp/race_stack_optimizer && \
     python3 -c "import global_racetrajectory_optimization"
 
+# CUDA ray casting for PF on Jetson. CPU-only images can still run Cartographer;
+# PF requires a CUDA toolkit image and never falls back to a CPU implementation.
+COPY .install_utils/particle_filter_setup.sh /tmp/particle_filter_setup.sh
+RUN if [[ "${PLATFORM}" == "jet" ]]; then bash /tmp/particle_filter_setup.sh; fi && \
+    rm /tmp/particle_filter_setup.sh
+
+# Prefer the injected Jetson host driver over an older CUDA compat driver.
+ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu/nvidia:${LD_LIBRARY_PATH}
+
 ADD ./.install_utils /.install_utils
 RUN useradd -ms /bin/bash -u ${UID} -G sudo ${USER} && groupadd -fg ${GID} ${USER} \
+    && usermod -aG video ${USER} \
     && echo "${USER} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 USER $USER
 

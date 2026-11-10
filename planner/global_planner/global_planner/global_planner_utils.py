@@ -28,7 +28,8 @@ def extract_centerline(skeleton, cent_length: float, map_resolution: float) -> n
 
     This function takes a skeletonized binary image as input and extracts the centerline from it. The centerline is
     determined by finding closed contours in the image and comparing their lengths to the expected approximate centerline
-    length. The function returns the centerline in the form of a numpy array, where each element represents a point on
+    length. Without an expected length, use the contour enclosing the largest area to avoid selecting noise loops.
+    The function returns the centerline in the form of a numpy array, where each element represents a point on
     the centerline in cells (not meters).
 
     Parameters
@@ -83,7 +84,12 @@ def extract_centerline(skeleton, cent_length: float, map_resolution: float) -> n
         elif cent_length == 0.0:
             line_lengths[i] = line_length
 
-    # take the shortest line
+    # With no length estimate, the shortest loop can be a tiny artifact beside
+    # the track. Select the main loop by enclosed area instead of perimeter.
+    if cent_length == 0.0:
+        return max(closed_contours, key=cv2.contourArea).reshape(-1, 2)
+
+    # With an expected length, keep the shortest matching line.
     min_line_length = min(line_lengths)
 
     if min_line_length == np.inf:
@@ -107,10 +113,8 @@ def smooth_centerline(centerline: np.ndarray) -> np.ndarray:
 
     Notes
     -----
-    The savgol filter doesn't ensure a smooth transition at the end and beginning of the centerline. That's why
-    we apply a savgol filter to the centerline with start and end points on the other half of the track.
-    Afterwards, we take the results of the second smoothed centerline for the beginning and end of the
-    first centerline to get an overall smooth centerline
+    The centerline is a closed loop. Periodic padding smooths the transition
+    between its last and first points using the same window as the rest of the track.
 
     Parameters
     ----------
@@ -122,11 +126,9 @@ def smooth_centerline(centerline: np.ndarray) -> np.ndarray:
     centerline_smooth : np.ndarray
         Smooth centerline
     """
-    # centerline_smooth = centerline
-    # smooth centerline with a Savitzky Golay filter
-    # filter_length = 20
     centerline_length = len(centerline)
-    # print("Number of centerline points: ", centerline_length)
+    if centerline_length < 5:
+        raise ValueError('Centerline needs at least 5 points for cubic smoothing; check track closure.')
 
     if centerline_length > 2000:
         filter_length = int(centerline_length / 200) * 10 + 1
@@ -136,18 +138,8 @@ def smooth_centerline(centerline: np.ndarray) -> np.ndarray:
         filter_length = 41
     else:
         filter_length = 21
-    centerline_smooth = savgol_filter(centerline, filter_length, 3, axis=0)
-
-    # cen_len is half the length of the centerline
-    cen_len = int(len(centerline) / 2)
-    centerline2 = np.append(centerline[cen_len:], centerline[0:cen_len], axis=0)
-    centerline_smooth2 = savgol_filter(centerline2, filter_length, 3, axis=0)
-
-    # take points from second (smoothed) centerline for first centerline
-    centerline_smooth[0:filter_length] = centerline_smooth2[cen_len:(cen_len + filter_length)]
-    centerline_smooth[-filter_length:] = centerline_smooth2[(cen_len - filter_length):cen_len]
-
-    return centerline_smooth
+    filter_length = min(filter_length, centerline_length - (centerline_length % 2 == 0))
+    return savgol_filter(centerline, filter_length, 3, axis=0, mode='wrap')
 
 
 def extract_track_bounds(

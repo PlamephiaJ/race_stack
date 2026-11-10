@@ -5,10 +5,12 @@
          Only raw sensor topics are played; everything derived (/tf, /imu, /odom, /basalt/odom,
          /state_estimation/odom, /map, ...) is recomputed by the live nodes.
          Headless version with plots and metrics: state_estimation/eval/run_eval.py -->
+    <arg name="loc_algorithm" default="synpf"
+        description="synpf (default), pf or cartographer (alias: slam); particle-filter mapping uses slam_toolbox" />
     <arg name="bag" description="Path to the bag directory (recorded with ros2 bag record -a)" />
     <arg name="racecar_version" default="$(env RACECAR_VERSION)" description="'NUCx' the bag was recorded on" />
     <arg name="map_name" default="latest" description="Map name in stack_master/maps (localization mode)" />
-    <arg name="mapping" default="False" description="True: cartographer mapping instead of localization" />
+    <arg name="mapping" default="False" description="True: map with the selected backend instead of localizing" />
     <arg name="run_vio" default="$(env USE_VIO false)" description="True: run Basalt on the bagged camera images. False: use the bagged /basalt/odom" />
     <arg name="viz_flow" default="False" />
     <arg name="rate" default="1.0" description="Playback rate" />
@@ -42,6 +44,7 @@
     <!-- EKF + cartographer (+ VIO) -->
     <include file="$(find-pkg-share state_estimation)/launch/state_estimation_launch.xml">
         <arg name="racecar_version" value="$(var racecar_version)" />
+        <arg name="loc_algorithm" value="$(var loc_algorithm)" />
         <arg name="mapping_bool" value="$(var mapping)" />
         <arg name="map_name" value="$(var map_name)" />
         <arg name="use_sim_time" value="True" />

@@ -12,7 +12,6 @@ Accompanying this repository, a paper titled *ForzaETH Race Stack - Scaled Auton
 - Baysian Optimization
 - CPU Usage Measurements
 - Car2Car Syncing
-- SynPF integration
 - Scan Alignment
 - System Identification
 

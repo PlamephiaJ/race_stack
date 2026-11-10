@@ -214,7 +214,7 @@ def main():
     procs, record, play = [], None, None
     try:
         procs = [run(['ros2', 'launch', 'state_estimation', 'state_estimation_launch.xml', f'racecar_version:={a.car}',
-                      'mapping_bool:=False', f'map_name:={a.map}', 'use_sim_time:=True', f'use_vio:={str(use_vio).lower()}'],
+                      'loc_algorithm:=cartographer', 'mapping_bool:=False', f'map_name:={a.map}', 'use_sim_time:=True', f'use_vio:={str(use_vio).lower()}'],
                      stdout=open(out / 'logs' / 'launch.log', 'w'), stderr=subprocess.STDOUT),
                  run(['ros2', 'run', 'vesc_ackermann', 'vesc_to_odom_node', '--ros-args',
                       '--params-file', str(REPO / f'stack_master/config/{a.car}/vesc.yaml'), '-p', 'use_sim_time:=true'],

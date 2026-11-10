@@ -1,5 +1,10 @@
 <?xml version="1.0"?>
 <launch>
+    <arg name="loc_algorithm" default="synpf"
+        description="synpf (default), pf or cartographer (alias: slam); particle-filter mapping uses slam_toolbox" />
+    <arg name="pf_config" default="$(find-pkg-share stack_master)/config/particle_filter.yaml" />
+    <arg name="synpf_config" default="$(find-pkg-share stack_master)/config/synpf.yaml" />
+    <arg name="slam_toolbox_config" default="$(find-pkg-share stack_master)/config/slam_toolbox.yaml" />
     <arg name="mapping_bool" default="True" />
     <arg name="map_name" default="hangar" />
     <arg name="skip_early_fusion" default="False" />
@@ -13,6 +18,12 @@
     <arg name="racecar_version" default="$(env RACECAR_VERSION)" />
     <arg name="slam_config_path"
         default="$(find-pkg-share stack_master)/config/$(var racecar_version)/slam" />
+
+    <include file="$(find-pkg-share state_estimation)/launch/check_backend_launch.py">
+        <arg name="loc_algorithm" value="$(var loc_algorithm)" />
+        <arg name="mapping_bool" value="$(var mapping_bool)" />
+        <arg name="map_file" value="$(find-pkg-share stack_master)/maps/$(var map_name)/$(var map_name)" />
+    </include>
 
     <group>
         <set_parameter name="use_sim_time" value="$(var use_sim_time)" />
@@ -40,29 +51,42 @@
 
         <!-- IF SLAM LOC ONLY -->
         <group unless="$(var mapping_bool)">
-            <!-- start cartographer SLAM LOCALIZATION -->
-            <node name="cartographer_node" pkg="cartographer_ros" exec="cartographer_node"
-                args="
-                -configuration_directory $(var slam_config_path)
-                -configuration_basename f110_2d_loc.lua
-                -load_state_filename $(var map_path)/$(var map_name).pbstream
-                --minloglevel 2">
-                <remap from="odom" to="state_estimation/odom" />
+            <group if="$(eval &quot;'$(var loc_algorithm)' in ['cartographer', 'slam']&quot;)">
+                <!-- start cartographer SLAM LOCALIZATION -->
+                <node name="cartographer_node" pkg="cartographer_ros" exec="cartographer_node"
+                    args="
+                    -configuration_directory $(var slam_config_path)
+                    -configuration_basename f110_2d_loc.lua
+                    -load_state_filename $(var map_path)/$(var map_name).pbstream
+                    --minloglevel 2">
+                    <remap from="odom" to="state_estimation/odom" />
+                </node>
+
+                <!-- RViz /initialpose resets the live localization trajectory, preserving the frozen map. -->
+                <node if="$(var enable_initialpose)" pkg="state_estimation" exec="cartographer_initialpose"
+                    name="cartographer_initialpose" output="screen">
+                    <param name="configuration_directory" value="$(var slam_config_path)" />
+                    <param name="configuration_basename" value="f110_2d_loc.lua" />
+                    <param name="reference_trajectory_id" value="$(var reference_trajectory_id)" />
+                    <param name="map_frame" value="map" />
+                </node>
+
+                <!-- Keep the live SLAM grid separate from the saved map on /map. -->
+                <node name="cartographer_occupancy_grid_node" pkg="cartographer_ros"
+                    exec="cartographer_occupancy_grid_node" args="-resolution 0.05">
+                    <remap from="map" to="/map_raw" />
+                </node>
+
+            </group>
+
+            <node if="$(eval &quot;'$(var loc_algorithm)' == 'pf'&quot;)"
+                pkg="state_estimation" exec="particle_filter" name="particle_filter" output="screen">
+                <param from="$(var pf_config)" />
             </node>
 
-            <!-- RViz /initialpose resets the live localization trajectory, preserving the frozen map. -->
-            <node if="$(var enable_initialpose)" pkg="state_estimation" exec="cartographer_initialpose"
-                name="cartographer_initialpose" output="screen">
-                <param name="configuration_directory" value="$(var slam_config_path)" />
-                <param name="configuration_basename" value="f110_2d_loc.lua" />
-                <param name="reference_trajectory_id" value="$(var reference_trajectory_id)" />
-                <param name="map_frame" value="map" />
-            </node>
-
-            <!-- Keep the live SLAM grid separate from the saved map on /map. -->
-            <node name="cartographer_occupancy_grid_node" pkg="cartographer_ros"
-                exec="cartographer_occupancy_grid_node" args="-resolution 0.05">
-                <remap from="map" to="/map_raw" />
+            <node if="$(eval &quot;'$(var loc_algorithm)' == 'synpf'&quot;)"
+                pkg="state_estimation" exec="synpf" name="synpf" output="screen">
+                <param from="$(var synpf_config)" />
             </node>
 
             <!-- Launch map server with regular map name reads from OG MAP-->
@@ -79,18 +103,26 @@
 
         <!-- ELIF SLAM MAPPING -->
         <group if="$(var mapping_bool)">
-            <!-- start cartographer SLAM MAPPING -->
-            <node name="cartographer_node" pkg="cartographer_ros" exec="cartographer_node"
-                args="
-                -configuration_directory $(var slam_config_path)
-                -configuration_basename f110_2d.lua
-                --minloglevel 2">
-                <remap from="odom" to="state_estimation/odom" />
-            </node>
+            <group if="$(eval &quot;'$(var loc_algorithm)' in ['cartographer', 'slam']&quot;)">
+                <!-- start cartographer SLAM MAPPING -->
+                <node name="cartographer_node" pkg="cartographer_ros" exec="cartographer_node"
+                    args="
+                    -configuration_directory $(var slam_config_path)
+                    -configuration_basename f110_2d.lua
+                    --minloglevel 2">
+                    <remap from="odom" to="state_estimation/odom" />
+                </node>
 
-            <node name="cartographer_occupancy_grid_node" pkg="cartographer_ros"
-                exec="cartographer_occupancy_grid_node" args="-resolution 0.05">
-            </node>
+                <node name="cartographer_occupancy_grid_node" pkg="cartographer_ros"
+                    exec="cartographer_occupancy_grid_node" args="-resolution 0.05">
+                </node>
+            </group>
+            <group if="$(eval &quot;'$(var loc_algorithm)' in ['pf', 'synpf']&quot;)">
+                <include file="$(find-pkg-share slam_toolbox)/launch/online_async_launch.py">
+                    <arg name="slam_params_file" value="$(var slam_toolbox_config)" />
+                    <arg name="use_sim_time" value="$(var use_sim_time)" />
+                </include>
+            </group>
         </group>
 
         <include if="$(var use_vio)"

@@ -299,8 +299,10 @@ def test_bridge_launch_is_scoped_to_localization_group():
     root = ElementTree.parse(launch).getroot()
     nodes = root.findall(".//node[@exec='cartographer_initialpose']")
     localization = root.find(".//group[@unless='$(var mapping_bool)']")
+    cartographer = localization.find('group')
     assert len(nodes) == 1
-    assert nodes[0] in list(localization)
+    assert nodes[0] in list(cartographer)
+    assert 'cartographer' in cartographer.get('if')
     assert nodes[0].get('if') == '$(var enable_initialpose)'
     params = {p.get('name'): p.get('value') for p in nodes[0].findall('param')}
     assert params['configuration_directory'] == '$(var slam_config_path)'

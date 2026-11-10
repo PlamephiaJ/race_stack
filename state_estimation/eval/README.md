@@ -85,3 +85,6 @@ a position offset is removed by the alignment, but it adds yaw_rate x offset to 
   `YAW_WINDOW_S` (0.3 s) before rotating into the body frame (heading jitter leaks speed into vy). Longer windows
   cut the jitter further but smear the 0.2-0.3 s turn-in transients. Without GT the reference is the differentiated output of cartographer.
 * Latency in `timing.pdf` is "record time minus header stamp" with the recorder on sim time. Some nodes, e.g. vesc imu node, stampt at receive time so it will always show ~0.
+The headless evaluator explicitly selects Cartographer as its reference backend.
+For SynPF/PF replay use `bag_replay_launch.xml loc_algorithm:=synpf` (or `pf`);
+these launches follow the new default and preserve the existing sensor/EKF chain.

@@ -22,6 +22,16 @@ Run the mapping launch file:
 ```shell
 ros2 launch stack_master mapping_launch.xml map_name:=<map name of choice>
 ```
+
+The default backend is GPU SynPF (`loc_algorithm:=synpf`). Choose the original
+GPU PF with `loc_algorithm:=pf`, or Cartographer with `loc_algorithm:=cartographer`
+(`slam` is an alias). The mapping and car launch scripts
+accept launch arguments, e.g. `bash launch_scripts/launch_mapping.sh loc_algorithm:=pf`.
+Both particle filters use the saved PNG/YAML map; their mapping modes use slam_toolbox.
+Press `y` to save through the existing map exporter: identical PNG/YAML and
+`pf_map` files with `initial_pose`, with no pbstream in PF mode.
+[Dependencies and details](../state_estimation/PARTICLE_FILTER.md).
+
   - `<map name of choice>` can be any name with no white space. Conventionally we use the location name (eg, 'hangar', 'ETZ', 'icra') followed by the day of the month followed by an incremental version number. For instance, `hangar_12_v0`. You can also omit this argument. Then a map called `latest` is created. If there already is such a map it is copied to `backup`.
   - `<NUCX>` depends on which car you are using. Parameters are available for NUC2, NUC5, NUC6, SIM (the latter represents a dummy car). If you have exported a `.env` file during the build process this is read from the env variables and does not have to be set.
 

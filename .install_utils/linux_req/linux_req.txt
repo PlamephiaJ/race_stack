@@ -1,4 +1,5 @@
 wget
+git
 jq
 x11-apps
 python3-pip
@@ -11,6 +12,7 @@ ros-humble-diagnostic-updater
 ros-humble-robot-localization
 ros-humble-tf-transformations
 ros-humble-cartographer-ros
+ros-humble-slam-toolbox
 ros-humble-urg-node
 ros-humble-ackermann-msgs
 ros-humble-control-msgs

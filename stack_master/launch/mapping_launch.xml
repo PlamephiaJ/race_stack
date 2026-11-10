@@ -1,5 +1,7 @@
 <!-- -*- mode: XML -*- -->
 <launch>
+    <arg name="loc_algorithm" default="synpf"
+        description="synpf (default), pf or cartographer (alias: slam); particle-filter mapping uses slam_toolbox" />
     <arg name="racecar_version" default="$(env RACECAR_VERSION)" />
     <arg name="floor" default="dubi" />
     <arg name="map_name" description="Name of the map to be created" default="latest"/>
@@ -12,8 +14,7 @@
     <node pkg="global_planner" exec="mapping_node" name="mapping_node" output="screen" emulate_tty="true">
         <param from="$(find-pkg-share stack_master)/config/global_planner/mapping.yaml" />
         <param name="map_name" value="$(var map_name)" />
-        <param from="$(find-pkg-share stack_master)/config/global_planner/mapping.yaml" />
-        <param name="map_name" value="$(var map_name)" />
+        <param name="loc_algorithm" value="$(var loc_algorithm)" />
     </node>
 
     <!-- launch teleop + sensors -->
@@ -25,6 +26,7 @@
     <!-- launch SE -->
     <include file="$(find-pkg-share state_estimation)/launch/state_estimation_launch.xml">
         <arg name="racecar_version" value="$(var racecar_version)" />
+        <arg name="loc_algorithm" value="$(var loc_algorithm)" />
         <arg name="mapping_bool" value="True" />
         <arg name="map_name" value="$(var map_name)" />
         <arg name="use_sim_time" value="False" />

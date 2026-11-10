@@ -31,6 +31,11 @@ class MappingNode(Node):
         super().__init__('mapping_node', allow_undeclared_parameters=True,
                          automatically_declare_parameters_from_overrides=True)
         self.map_name = self.get_parameter('map_name').value
+        if not self.has_parameter('loc_algorithm'):
+            self.declare_parameter('loc_algorithm', 'synpf')
+        self.loc_algorithm = self.get_parameter('loc_algorithm').value
+        if self.loc_algorithm not in ('cartographer', 'slam', 'pf', 'synpf'):
+            raise ValueError('loc_algorithm must be synpf, pf or cartographer (alias: slam)')
         self.map_dir = get_data_path('maps/' + self.map_name)
         self.rate = self.get_parameter('rate').value
         self.map_occupancy_grid_threshold = self.get_parameter('occupancy_grid_threshold').value
@@ -53,8 +58,9 @@ class MappingNode(Node):
         self._tty = open('/dev/tty', 'r')
         self._old_settings = termios.tcgetattr(self._tty)
         
-        self.finish_trajectory_client = self.create_client(FinishTrajectory, '/finish_trajectory')
-        self.write_state_client = self.create_client(WriteState, '/write_state')
+        if self.loc_algorithm not in ('pf', 'synpf'):
+            self.finish_trajectory_client = self.create_client(FinishTrajectory, '/finish_trajectory')
+            self.write_state_client = self.create_client(WriteState, '/write_state')
         self.filtered_map_pub = self.create_publisher(
             OccupancyGrid, '/map_filtered', QoSProfile(
                 depth=1,
@@ -169,6 +175,12 @@ class MappingNode(Node):
         self.filter_map_occupancy_grid()
         _save_map_to_directory(self.map_dir, self.map_name, self.filtered_map, self.map_resolution, self.map_origin.x, self.map_origin.y, self.initial_position)
         _save_map_to_directory(self.map_dir, 'pf_map', self.filtered_map, self.map_resolution, self.map_origin.x, self.map_origin.y, self.initial_position)
+
+        self.get_logger().info(f'PNG and YAML files saved in {self.map_dir}')
+        if self.loc_algorithm in ('pf', 'synpf'):
+            # slam_toolbox publishes the same OccupancyGrid. There is no
+            # Cartographer trajectory to finish and no pbstream to export.
+            return
 
         # Call ROS service to save PB stream
         pbstream_path = os.path.join(self.map_dir, self.map_name + ".pbstream")
