@@ -343,11 +343,11 @@ class StateMachine(Node):
     
     def visualize_state(self, state: StateType):
         """
-        Function that visualizes the state of the car by displaying a colored cube in RVIZ.
+        Display the current state as camera-facing text in RViz.
 
         Parameters
         ----------
-        action
+        state
             Current state of the car to be displayed
         """
         if self.first_visualization:
@@ -365,35 +365,21 @@ class StateMachine(Node):
             self.y_viz = y0 + xy_norm[1]
 
         mrk = Marker()
-        mrk.type = mrk.SPHERE
+        mrk.type = Marker.TEXT_VIEW_FACING
+        mrk.text = f"State: {state.value}"
         mrk.id = int(1)
         mrk.header.frame_id = "map"
         mrk.header.stamp = self.get_clock().now().to_msg()
         mrk.color.a = 1.0
-        mrk.color.g = 1.0
+        mrk.color.r = 1.0
+        mrk.color.g = 0.0
+        mrk.color.b = 0.0
         mrk.pose.position.x = float(self.x_viz)
         mrk.pose.position.y = float(self.y_viz)
-        mrk.pose.position.z = 0.0
+        mrk.pose.position.z = 1.0
         mrk.pose.orientation.w = 1.0
-        mrk.scale.x = 1.0
-        mrk.scale.y = 1.0
-        mrk.scale.z = 1.0
-
-        # Set color and log info based on the state of the car
-        if state == StateType.GB_TRACK:
-            mrk.color.g = 1.0
-        elif state == StateType.OVERTAKE:
-            mrk.color.r = 1.0
-            mrk.color.g = 1.0
-            mrk.color.b = 1.0
-        elif state == StateType.TRAILING:
-            mrk.color.r = 0.0
-            mrk.color.g = 0.0
-            mrk.color.b = 1.0
-        elif state == StateType.FTGONLY:
-            mrk.color.r = 1.0
-            mrk.color.g = 0.0
-            mrk.color.b = 0.0
+        # For text markers, scale.z controls the character height in meters.
+        mrk.scale.z = 0.5
         self.state_marker_pub.publish(mrk)
 
     #############
