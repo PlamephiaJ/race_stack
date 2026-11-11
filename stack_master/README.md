@@ -96,7 +96,7 @@ deadman button (button 5 for BLUE).
 
 Edit `config/follow_the_gap_params.yaml` for all standalone FTG tuning parameters.
 It includes LiDAR cropping/filtering, obstacle bubbles, gap selection, the
-distance-to-speed curve, stop dead zone, command acceleration/deceleration, steering margin,
+distance-to-speed curve, minimum driving speed, command acceleration/deceleration, steering margin,
 and shutdown publications;
 each entry documents its units and constraints. The configured `max_speed` is
 3.5 m/s (direct execution without YAML retains the 1.0 m/s fallback).
@@ -118,14 +118,15 @@ not replace the selected vehicle's calibration. Topics use ROS remappings.
 Speed uses the filtered/clipped front beam before obstacle bubbles
 (default index 540); set
 `front_distance_index: -1` to locate the forward beam from `LaserScan` geometry.
-The target is `min(speed_distance_gain * max(front_distance - braking_stop_margin, 0), max_speed)`.
-At distances up to 0.30 m the target is zero; beyond that it increases linearly
-with a slope of 0.9 (m/s)/m. With the current 1.5 m distance clip, the target
+The target is `min(max(min_speed, speed_distance_gain * max(front_distance - braking_stop_margin, 0)), max_speed)`.
+The minimum driving target is 0.7 m/s, including distances at or below 0.30 m.
+The linear curve takes over above approximately 1.08 m with the default gain
+of 0.9. With the current 1.5 m distance clip, the target
 reaches at most 1.08 m/s. Bubble masks only affect gap selection. Commands ramp
 up at `max_acceleration` (default 1.0 m/s^2), starting with zero speed on the
 first scan. Steering continues to update independently. The command deceleration
 limiter can temporarily retain a higher speed as the car slows down, including
-entry into the dead zone. Both rate limits cap elapsed time at `max_command_dt`.
+entry into the minimum-speed region. Both rate limits cap elapsed time at `max_command_dt`.
 
 The historical `controller_manager` FTG implementation has its own configuration
 in `controller/config/legacy_ftg.yaml`, loaded by `controller_launch.xml` through

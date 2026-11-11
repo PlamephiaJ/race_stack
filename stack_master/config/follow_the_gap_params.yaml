@@ -15,14 +15,16 @@
     gap_weight_power: 2.0      # centre weights = range ** power; 0 gives uniform weights.
     front_distance_index: 540  # beam used for speed; -1 selects 0 rad from LaserScan geometry.
 
-    # Linear target: min(speed_distance_gain * max(d - braking_stop_margin, 0), max_speed).
+    # Linear target floored at min_speed and capped at max_speed:
+    # min(max(min_speed, speed_distance_gain * max(d - braking_stop_margin, 0)), max_speed).
     # d is the filtered/clipped front range BEFORE obstacle bubbles.
-    # Zero target at d <= 0.30 m, then increase continuously from zero.
-    max_speed: 3.5              # m/s; upper bound of desired speed; direct-node fallback is 1.0.
+    # At d <= 0.20 m the target is min_speed; startup still ramps from zero.
+    max_speed: 4.0              # m/s; upper bound of desired speed; direct-node fallback is 1.0.
+    min_speed: 2.0             # m/s; minimum driving target, including within 0.20 m; 0 <= min_speed <= max_speed.
     speed_distance_gain: 0.9   # (m/s)/m; > 0.
     max_acceleration: 1.0      # m/s^2; command acceleration limit, including startup; > 0.
     max_deceleration: 2.5      # m/s^2; command deceleration limit; > 0.
-    braking_stop_margin: 0.30  # m; zero-speed dead zone, subtracted before linear scaling; >= 0.
+    braking_stop_margin: 0.20  # m; distance offset subtracted before linear scaling; >= 0.
     max_command_dt: 0.10       # s; largest elapsed time used by acceleration/deceleration limits; > 0.
 
     # Steering: real-car launch first loads config/<racecar_version>/vesc.yaml.

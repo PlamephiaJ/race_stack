@@ -89,6 +89,8 @@ def test_yaml_lists_all_standalone_tuning_and_loads_values(node_factory):
 
 @pytest.mark.parametrize('values', [
     {'max_speed': 0.0}, {'max_deceleration': float('nan')},
+    {'min_speed': -0.1}, {'min_speed': float('nan')},
+    {'min_speed': float('inf')}, {'min_speed': 1.1},
     {'max_acceleration': 0.0}, {'max_acceleration': -1.0},
     {'max_acceleration': float('nan')}, {'max_acceleration': float('inf')},
     {'bubble_radius': -0.1}, {'preprocess_conv_size': 0},
@@ -145,8 +147,8 @@ def test_bubble_radius_and_disparity_threshold_are_used(node_factory):
 
 
 @pytest.mark.parametrize('distance, expected', [
-    (0.0, 0.0), (0.29, 0.0), (0.3, 0.0), (0.31, 0.005),
-    (0.5, 0.1), (2.0, 0.85), (4.0, 1.85), (12.0, 5.0),
+    (0.0, 0.7), (0.29, 0.7), (0.3, 0.7), (0.31, 0.7),
+    (0.5, 0.7), (2.0, 0.85), (4.0, 1.85), (12.0, 5.0),
 ])
 def test_custom_speed_curve_reaches_published_command(speed_target_node_factory, distance, expected):
     node = speed_target_node_factory({
@@ -164,7 +166,7 @@ def test_front_beam_and_custom_dead_zone_are_used(speed_target_node_factory):
         'scan_range_offset': 0, 'front_distance_index': 2,
         'preprocess_conv_size': 1, 'bubble_radius': 0.0,
         'max_speed': 10.0, 'braking_stop_margin': 0.5,
-        'speed_distance_gain': 0.5,
+        'speed_distance_gain': 0.5, 'min_speed': 0.1,
     })
     node.lidar_callback(scan([3.0, 3.0, 1.0, 3.0]))
     assert node.publisher.publish.call_args.args[0].drive.speed == pytest.approx(0.25)
@@ -177,7 +179,7 @@ def test_front_beam_and_custom_dead_zone_are_used(speed_target_node_factory):
 def test_bubble_mask_does_not_zero_speed(speed_target_node_factory, monkeypatch, bubble_method, distances):
     node = speed_target_node_factory({
         'scan_range_offset': 0, 'front_distance_index': 10,
-        'preprocess_conv_size': 1,
+        'preprocess_conv_size': 1, 'min_speed': 0.05,
     })
     method = getattr(node, bubble_method)
     masked_front = []
@@ -193,13 +195,32 @@ def test_bubble_mask_does_not_zero_speed(speed_target_node_factory, monkeypatch,
 
 
 @pytest.mark.parametrize('distance', [0.0, 0.2, 0.3])
-def test_dead_zone_gives_zero_target_at_close_distances(speed_target_node_factory, distance):
+def test_close_distances_keep_minimum_driving_target(speed_target_node_factory, distance):
     node = speed_target_node_factory({
         'scan_range_offset': 0, 'front_distance_index': 10,
         'preprocess_conv_size': 1,
     })
     node.lidar_callback(scan([distance] * 20))
-    assert node.publisher.publish.call_args.args[0].drive.speed == 0.0
+    assert node.publisher.publish.call_args.args[0].drive.speed == pytest.approx(0.7)
+
+
+@pytest.mark.parametrize('min_speed', [0.0, 0.4, 1.0])
+def test_minimum_speed_is_configurable(speed_target_node_factory, min_speed):
+    node = speed_target_node_factory({'min_speed': min_speed})
+    node.lidar_callback(scan([0.2] * 1080))
+    assert node.publisher.publish.call_args.args[0].drive.speed == pytest.approx(min_speed)
+
+
+def test_deceleration_settles_at_minimum_speed(node_factory, monkeypatch):
+    node = node_factory()
+    node.last_commanded_speed = 0.75
+    node.last_command_time = 1.0
+    clock = [1.1]
+    monkeypatch.setattr('controller.follow_the_gap.time.monotonic', lambda: clock[0])
+    for _ in range(2):
+        node.lidar_callback(scan([0.2] * 1080))
+        assert node.publisher.publish.call_args.args[0].drive.speed == pytest.approx(0.7)
+        clock[0] += 0.1
 
 
 def test_startup_ramps_from_zero_while_steering_updates(node_factory, monkeypatch):
@@ -220,16 +241,16 @@ def test_startup_ramps_from_zero_while_steering_updates(node_factory, monkeypatc
     assert second.steering_angle < 0.0
 
 
-@pytest.mark.parametrize('elapsed, distance, expected', [
-    (0.04, 2.0, 0.42),  # A larger distance cannot cause an immediate speed jump.
-    (1.0, 2.0, 0.45),   # Long scan gaps use max_command_dt.
-    (0.0, 2.0, 0.4),
-    (-0.01, 2.0, 0.4),
-    (0.05, 0.76, 0.414),  # A reachable target must not be overshot.
+@pytest.mark.parametrize('elapsed, distance, previous, expected', [
+    (0.04, 2.0, 0.4, 0.42),  # A larger distance cannot cause an immediate speed jump.
+    (1.0, 2.0, 0.4, 0.45),   # Long scan gaps use max_command_dt.
+    (0.0, 2.0, 0.4, 0.4),
+    (-0.01, 2.0, 0.4, 0.4),
+    (0.05, 0.76, 0.69, 0.7),  # A reachable target must not be overshot.
 ])
-def test_acceleration_limits_speed_increases(node_factory, monkeypatch, elapsed, distance, expected):
+def test_acceleration_limits_speed_increases(node_factory, monkeypatch, elapsed, distance, previous, expected):
     node = node_factory({'max_acceleration': 0.5, 'max_command_dt': 0.1})
-    node.last_commanded_speed = 0.4
+    node.last_commanded_speed = previous
     node.last_command_time = 1.0
     monkeypatch.setattr('controller.follow_the_gap.time.monotonic', lambda: 1.0 + elapsed)
     node.lidar_callback(scan([distance] * 1080))

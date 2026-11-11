@@ -261,7 +261,7 @@ All startup tuning parameters are listed with units and constraints in
 | LiDAR and clearance | `bubble_radius`, `max_distance`, `disparity_thresh`, `scan_range_offset`, `preprocess_conv_size` |
 | Gap selection | `minimum_gap_angle`, `gap_weight_power` |
 | Speed measurement | `front_distance_index` (540 by default; -1 uses the forward beam from scan geometry) |
-| Speed curve and dead zone | `max_speed`, `speed_distance_gain`, `braking_stop_margin` |
+| Speed curve and minimum | `min_speed`, `max_speed`, `speed_distance_gain`, `braking_stop_margin` |
 | Command acceleration/deceleration | `max_acceleration`, `max_deceleration`, `max_command_dt` |
 | Steering | `steering_angle_to_servo_gain`, `steering_angle_to_servo_offset`, `servo_min`, `servo_max`, `servo_limit_margin` |
 | ROS and shutdown | `debug`, `publish_queue_depth`, `stop_publish_count`, `stop_publish_interval` |
@@ -275,13 +275,14 @@ optional calibration overrides in the FTG file are commented to preserve it.
 
 The speed curve uses the filtered/clipped front range before obstacle
 bubbles, so steering masks cannot force the speed distance to zero.
-The target is `min(speed_distance_gain * max(front_distance - braking_stop_margin, 0), max_speed)`.
-The default 0.30 m dead zone gives a zero target; beyond it, speed increases
-continuously with a slope of 0.9 (m/s)/m. Command acceleration is limited to
+The target is `min(max(min_speed, speed_distance_gain * max(front_distance - braking_stop_margin, 0)), max_speed)`.
+The default minimum driving target is 0.7 m/s, including distances at or below
+0.30 m. The linear target takes over when it exceeds this floor; with the
+default gain of 0.9, that happens above approximately 1.08 m. Command acceleration is limited to
 `max_acceleration` (default 1.0 m/s^2), including startup: the first scan
 publishes zero speed, then subsequent scans ramp toward the distance target.
 The command deceleration limiter controls how quickly a previous command
-decreases, including entry into the dead zone. Both limits use elapsed monotonic
+decreases toward the target, including the minimum-speed region. Both limits use elapsed monotonic
 time capped by `max_command_dt`. Steering continues to update independently.
 Shutdown still publishes zero-speed commands.
 

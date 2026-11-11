@@ -26,6 +26,7 @@ class ReactiveFollowGap(Node):
         'gap_weight_power': 2.0,
         'front_distance_index': 540,
         'max_speed': 1.0,
+        'min_speed': 0.7,
         'max_acceleration': 1.0,
         'max_deceleration': 2.5,
         'braking_stop_margin': 0.30,
@@ -92,7 +93,7 @@ class ReactiveFollowGap(Node):
         )
         nonnegative = (
             'bubble_radius', 'disparity_thresh', 'minimum_gap_angle',
-            'gap_weight_power', 'braking_stop_margin',
+            'gap_weight_power', 'braking_stop_margin', 'min_speed',
             'stop_publish_interval', 'servo_limit_margin',
         )
         for name in positive + nonnegative:
@@ -100,6 +101,8 @@ class ReactiveFollowGap(Node):
             if not math.isfinite(value) or value < 0 or (name in positive and value == 0):
                 constraint = 'positive' if name in positive else 'non-negative'
                 raise ValueError(f'{name} must be finite and {constraint}')
+        if self.min_speed > self.max_speed:
+            raise ValueError('min_speed must not exceed max_speed')
         for name, minimum in (
                 ('scan_range_offset', 0), ('front_distance_index', -1),
                 ('preprocess_conv_size', 1), ('stop_publish_count', 1),
@@ -291,10 +294,11 @@ class ReactiveFollowGap(Node):
 
         drive_msg.drive.steering_angle = angle
         self.last_steering_angle = angle
-        # Zero target inside the stop margin, then increase linearly from zero.
+        # Keep a minimum driving target, including inside the distance margin.
         speed_distance = max(front_distance - self.braking_stop_margin, 0.0)
         desired_speed = min(
-            self.speed_distance_gain * speed_distance, self.max_speed)
+            max(self.min_speed, self.speed_distance_gain * speed_distance),
+            self.max_speed)
 
         # Bound speed changes in both directions. The first scan establishes
         # the time reference and publishes zero; subsequent scans ramp up.
