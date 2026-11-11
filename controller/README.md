@@ -261,8 +261,8 @@ All startup tuning parameters are listed with units and constraints in
 | LiDAR and clearance | `bubble_radius`, `max_distance`, `disparity_thresh`, `scan_range_offset`, `preprocess_conv_size` |
 | Gap selection | `minimum_gap_angle`, `gap_weight_power` |
 | Speed measurement | `front_distance_index` (540 by default; -1 uses the forward beam from scan geometry) |
-| Speed curve | `max_speed`, `speed_near_distance`, `speed_far_distance`, `speed_near`, `speed_distance_gain`, `speed_distance_offset` |
-| Braking | `max_deceleration`, `braking_stop_margin`, `max_command_dt` |
+| Speed curve and dead zone | `max_speed`, `speed_distance_gain`, `braking_stop_margin` |
+| Command acceleration/deceleration | `max_acceleration`, `max_deceleration`, `max_command_dt` |
 | Steering | `steering_angle_to_servo_gain`, `steering_angle_to_servo_offset`, `servo_min`, `servo_max`, `servo_limit_margin` |
 | ROS and shutdown | `debug`, `publish_queue_depth`, `stop_publish_count`, `stop_publish_interval` |
 
@@ -273,10 +273,17 @@ selects an alternative configuration. Use ROS remappings for topics.
 Real-car steering calibration comes from the selected vehicle's `vesc.yaml`;
 optional calibration overrides in the FTG file are commented to preserve it.
 
-The speed curve uses the processed front range after clipping and obstacle
-bubbles. With the existing `max_distance: 3.5` and `speed_far_distance: 4.0`, the
-far-speed branch cannot be reached. Braking caps the desired speed, and the
-command deceleration limiter controls how quickly a previous command decreases.
+The speed curve uses the filtered/clipped front range before obstacle
+bubbles, so steering masks cannot force the speed distance to zero.
+The target is `min(speed_distance_gain * max(front_distance - braking_stop_margin, 0), max_speed)`.
+The default 0.30 m dead zone gives a zero target; beyond it, speed increases
+continuously with a slope of 0.9 (m/s)/m. Command acceleration is limited to
+`max_acceleration` (default 1.0 m/s^2), including startup: the first scan
+publishes zero speed, then subsequent scans ramp toward the distance target.
+The command deceleration limiter controls how quickly a previous command
+decreases, including entry into the dead zone. Both limits use elapsed monotonic
+time capped by `max_command_dt`. Steering continues to update independently.
+Shutdown still publishes zero-speed commands.
 
 ## Historical controller-manager FTG configuration
 

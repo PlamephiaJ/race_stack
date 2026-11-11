@@ -82,12 +82,41 @@ images can still run Cartographer; GPU PF requires a CUDA toolkit image.
 Build with the ROS Python interpreter.
 
 Jetson GPU devices must also be accessible to the runtime user. After adding the
-video group, run `newgrp video` (or recreate the container/session) to refresh
+video group, run `newgrp video` (or start a fresh user session) to refresh
 supplementary groups. A new VSCode terminal alone may inherit the old groups.
 The host's DRM render device GIDs can differ from the container's `render` group.
 On this host `/dev/dri/renderD128` and `/dev/dri/renderD129` belong to GID 104,
-while the container's `render` group is 109. Their access must be explicitly
-approved/configured on the host; membership in `video` alone is insufficient. Device ACLs may need to be reapplied when the host recreates the device nodes.
+while the container's `render` group is 109 (104 is named `messagebus` in the
+image). The Jetson Compose service configures supplementary GIDs 44 and 104 for
+new containers;
+device access uses numeric IDs, so adding the image's `render` group does not
+fix this mismatch. If a different host uses another render GID, set
+`JETSON_RENDER_GID` in the project's `.env` to the result of
+`stat -c '%g' /dev/dri/renderD128` on that host.
+
+For an existing container with dependencies installed after image creation,
+preserve it and update its account groups **inside that container**:
+
+```bash
+sudo usermod -aG 104 "$USER"
+# Refresh this shell's groups; 104 is named messagebus in this image.
+newgrp messagebus
+id
+python3 -c 'from state_estimation.particle_filter_gpu import require_cuda; print(require_cuda())'
+```
+
+The check should print `1` on this Jetson. The account change is stored in the
+existing container's `/etc/group` and survives container/host restarts. Existing
+shells and VSCode servers keep their old process groups; use `newgrp` before
+launching PF from such a session. No manual device chmod or temporary ACL is
+required. `make launch` preserves existing containers. To start a stopped
+container from the Docker host without replacing it, use `docker compose start
+jet`; `docker compose restart jet` also preserves its writable filesystem.
+
+Do not run `docker compose up` to apply the new Compose groups to this existing
+container: configuration changes can recreate it, losing dependencies in its
+writable filesystem. The Compose group setting covers future new containers;
+the account update above fixes this existing one without recreating it.
 The node checks CUDA access and stops with an error if it is denied. It never launches a CPU substitute.
 
 ```bash

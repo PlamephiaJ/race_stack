@@ -96,9 +96,10 @@ deadman button (button 5 for BLUE).
 
 Edit `config/follow_the_gap_params.yaml` for all standalone FTG tuning parameters.
 It includes LiDAR cropping/filtering, obstacle bubbles, gap selection, the
-distance-to-speed curve, braking, steering margin, and shutdown publications;
+distance-to-speed curve, stop dead zone, command acceleration/deceleration, steering margin,
+and shutdown publications;
 each entry documents its units and constraints. The configured `max_speed` is
-4.0 m/s (direct execution without YAML retains the 1.0 m/s fallback).
+3.5 m/s (direct execution without YAML retains the 1.0 m/s fallback).
 The same file applies to both ego and opponent. Parameters are read at startup;
 restart FTG after editing. The three launch arguments `max_speed`,
 `max_deceleration`, and `minimum_gap_angle` override the file, and `param_file`
@@ -114,12 +115,17 @@ the FTG parameter file; the `SIM` configuration uses the node's steering default
 The FTG YAML lists optional calibration overrides as comments so that it does
 not replace the selected vehicle's calibration. Topics use ROS remappings.
 
-Speed uses the processed front beam (default index 540); set
+Speed uses the filtered/clipped front beam before obstacle bubbles
+(default index 540); set
 `front_distance_index: -1` to locate the forward beam from `LaserScan` geometry.
-The historical `max_distance: 3.5` clip is below `speed_far_distance: 4.0`, so
-the far-speed branch is unreachable until one of those settings is changed.
-Braking limits the desired speed, while the command deceleration limiter can
-temporarily retain a higher speed as the car slows down.
+The target is `min(speed_distance_gain * max(front_distance - braking_stop_margin, 0), max_speed)`.
+At distances up to 0.30 m the target is zero; beyond that it increases linearly
+with a slope of 0.9 (m/s)/m. With the current 1.5 m distance clip, the target
+reaches at most 1.08 m/s. Bubble masks only affect gap selection. Commands ramp
+up at `max_acceleration` (default 1.0 m/s^2), starting with zero speed on the
+first scan. Steering continues to update independently. The command deceleration
+limiter can temporarily retain a higher speed as the car slows down, including
+entry into the dead zone. Both rate limits cap elapsed time at `max_command_dt`.
 
 The historical `controller_manager` FTG implementation has its own configuration
 in `controller/config/legacy_ftg.yaml`, loaded by `controller_launch.xml` through

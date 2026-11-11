@@ -42,6 +42,9 @@ services:
     runtime: nvidia
     group_add:
       - "44" # Jetson video devices, including /dev/nvmap and /dev/nvhost-gpu
+      # Use the HOST device GID, not the image's render group (109). On this
+      # Jetson GID 104 is named messagebus inside the image; access is numeric.
+      - "${JETSON_RENDER_GID:-104}"
     deploy:
       resources:
         reservations:

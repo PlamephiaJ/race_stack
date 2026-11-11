@@ -26,13 +26,10 @@ class ReactiveFollowGap(Node):
         'gap_weight_power': 2.0,
         'front_distance_index': 540,
         'max_speed': 1.0,
+        'max_acceleration': 1.0,
         'max_deceleration': 2.5,
         'braking_stop_margin': 0.30,
-        'speed_near_distance': 1.2,
-        'speed_far_distance': 4.0,
-        'speed_near': 0.96,
         'speed_distance_gain': 0.9,
-        'speed_distance_offset': 0.2,
         'max_command_dt': 0.10,
         'stop_publish_count': 3,
         'stop_publish_interval': 0.05,
@@ -91,11 +88,11 @@ class ReactiveFollowGap(Node):
     def _validate_parameters(self):
         positive = (
             'max_distance', 'max_speed', 'max_deceleration', 'max_command_dt',
+            'speed_distance_gain', 'max_acceleration',
         )
         nonnegative = (
             'bubble_radius', 'disparity_thresh', 'minimum_gap_angle',
-            'gap_weight_power', 'braking_stop_margin', 'speed_near_distance',
-            'speed_near', 'speed_distance_gain', 'speed_distance_offset',
+            'gap_weight_power', 'braking_stop_margin',
             'stop_publish_interval', 'servo_limit_margin',
         )
         for name in positive + nonnegative:
@@ -110,9 +107,6 @@ class ReactiveFollowGap(Node):
             value = getattr(self, name)
             if type(value) is not int or value < minimum:
                 raise ValueError(f'{name} must be an integer >= {minimum}')
-        if (not math.isfinite(self.speed_far_distance)
-                or self.speed_far_distance <= self.speed_near_distance):
-            raise ValueError('speed_far_distance must exceed speed_near_distance')
         if (not all(math.isfinite(v) for v in (
                 self.steering_angle_to_servo_gain,
                 self.steering_angle_to_servo_offset, self.servo_min, self.servo_max))
@@ -283,10 +277,11 @@ class ReactiveFollowGap(Node):
             raise ValueError('front_distance_index must lie inside the processed scan sector')
 
         proc_ranges = self.preprocess_lidar(ranges)
+        # Read speed distance before steering bubbles mask obstacle ranges.
+        front_distance = float(proc_ranges[front_index])
         self.disparity_extender(proc_ranges, angle_increment)
         self.closest_point_zero_out(proc_ranges, angle_increment)
         best_index = self.find_best_point(proc_ranges, angle_increment)
-        front_distance = proc_ranges[front_index]
 
         drive_msg = AckermannDriveStamped()
         drive_msg.header.stamp = self.get_clock().now().to_msg()
@@ -294,31 +289,25 @@ class ReactiveFollowGap(Node):
         angle = float(np.clip(
             angle, self.min_steering_angle, self.max_steering_angle))
 
-        if front_distance < self.speed_near_distance:
-            set_speed = self.speed_near
-        elif front_distance < self.speed_far_distance:
-            set_speed = self.speed_distance_gain * front_distance + self.speed_distance_offset
-        else:
-            set_speed = self.max_speed
-
         drive_msg.drive.steering_angle = angle
         self.last_steering_angle = angle
-        # Limit the target to a speed that can stop before the forward obstacle.
-        braking_distance = max(
-            float(front_distance) - self.braking_stop_margin, 0.0)
-        braking_speed = math.sqrt(
-            2.0 * self.max_deceleration * braking_distance)
-        desired_speed = min(set_speed, self.max_speed, braking_speed)
+        # Zero target inside the stop margin, then increase linearly from zero.
+        speed_distance = max(front_distance - self.braking_stop_margin, 0.0)
+        desired_speed = min(
+            self.speed_distance_gain * speed_distance, self.max_speed)
 
-        # Retain the measured braking capability in the command itself.
+        # Bound speed changes in both directions. The first scan establishes
+        # the time reference and publishes zero; subsequent scans ramp up.
         now = time.monotonic()
-        if self.last_command_time is None:
-            set_speed = desired_speed
-        else:
+        dt = 0.0
+        if self.last_command_time is not None:
             dt = min(max(now - self.last_command_time, 0.0), self.max_command_dt)
-            minimum_reachable_speed = max(
-                self.last_commanded_speed - self.max_deceleration * dt, 0.0)
-            set_speed = max(desired_speed, minimum_reachable_speed)
+        minimum_reachable_speed = max(
+            self.last_commanded_speed - self.max_deceleration * dt, 0.0)
+        maximum_reachable_speed = (
+            self.last_commanded_speed + self.max_acceleration * dt)
+        set_speed = min(
+            max(desired_speed, minimum_reachable_speed), maximum_reachable_speed)
         self.last_command_time = now
         self.last_commanded_speed = set_speed
         drive_msg.drive.speed = set_speed
