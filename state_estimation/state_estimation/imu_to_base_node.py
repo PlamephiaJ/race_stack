@@ -37,6 +37,8 @@ class ImuToBase(Node):
         # multiplies the bias-corrected rate: integrated gyro yaw / cartographer yaw over whole laps
         self.declare_parameter('gyro_scale', 1.0)
         self.gyro_scale = float(self.get_parameter('gyro_scale').value)
+        self.gyro_variance = float(self.get_parameter('gyro_stddev').value) ** 2
+        self.accel_variance = float(self.get_parameter('accel_stddev').value) ** 2
 
         self.target_frame = self.get_parameter('target_frame').value
         self.R = None          # target <- imu rotation matrix
@@ -48,7 +50,10 @@ class ImuToBase(Node):
         self.pub = self.create_publisher(
             Imu, self.get_parameter('output_topic').value, 10)
         self.create_subscription(
-            Imu, self.get_parameter('input_topic').value, self._callback, 50)
+            # At a 200 Hz input rate, a depth-50 queue can retain about
+            # 0.25 s of old measurements when this Python callback falls
+            # behind. For state estimation, the newest sample is preferable.
+            Imu, self.get_parameter('input_topic').value, self._callback, 1)
 
     def _resolve(self, frame):
         try:
@@ -85,12 +90,12 @@ class ImuToBase(Node):
         q = tft.quaternion_multiply([q.x, q.y, q.z, q.w], self.q_inv)
         out.orientation.x, out.orientation.y, out.orientation.z, out.orientation.w = map(float, q)
 
-        for name, fallback in (('orientation_covariance', None),
-                               ('angular_velocity_covariance', 'gyro_stddev'),
-                               ('linear_acceleration_covariance', 'accel_stddev')):
+        for name, fallback_variance in (('orientation_covariance', None),
+                                        ('angular_velocity_covariance', self.gyro_variance),
+                                        ('linear_acceleration_covariance', self.accel_variance)):
             C = np.array(getattr(msg, name)).reshape(3, 3)
-            if fallback and not C.any():
-                C = np.eye(3) * self.get_parameter(fallback).value ** 2
+            if fallback_variance is not None and not C.any():
+                C = np.eye(3) * fallback_variance
             setattr(out, name, (R @ C @ R.T).ravel().tolist())
 
         self.pub.publish(out)

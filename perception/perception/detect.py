@@ -194,7 +194,7 @@ class Detect(Node):
         self.tracked_obstacles = []
 
         self.tf_buffer = Buffer(rclpy.duration.Duration(seconds=5))
-        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=False)
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=False, qos=10)
         self.path_needs_update = False
 
         # self.converter = self.initialize_converter()

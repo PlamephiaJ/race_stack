@@ -67,8 +67,8 @@ def move_local(particles, action):
 
 
 def differential_motion(particles, action, alpha, lam_thresh=0.1,
-                        model='tum', rng=np.random):
-    """TUM/AMCL rot1-trans-rot2 model, including SynPF's translation bias.
+                        model='tum', rng=np.random, translation_bias_sigma=0.5):
+    """TUM/AMCL rot1-trans-rot2 model with a configurable translation bias.
 
     Keep signed rotation for the mean, and use rotation magnitudes only for
     dispersion. Unlike the ROS1 implementation, do not discard sub-centimetre
@@ -93,7 +93,9 @@ def differential_motion(particles, action, alpha, lam_thresh=0.1,
     scale_trans = (a3 * trans + a4 * (noise1 + noise2)) * spread
     count = len(particles)
     sampled1 = rot1 + rng.normal(scale=scale1, size=count)
-    sampled_trans = trans + rng.normal(loc=scale_trans / 2, scale=scale_trans, size=count)
+    sampled_trans = trans + rng.normal(
+        loc=translation_bias_sigma * scale_trans,
+        scale=scale_trans, size=count)
     sampled2 = rot2 + rng.normal(scale=scale2, size=count)
     heading = particles[:, 2] + sampled1 + reverse_offset
     particles[:, 0] += sampled_trans * np.cos(heading)

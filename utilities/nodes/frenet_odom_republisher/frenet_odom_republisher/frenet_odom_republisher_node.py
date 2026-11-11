@@ -1,6 +1,7 @@
 import rclpy
 from stack_master.qos import LATCHED_QOS
 from rclpy.node import Node
+from rclpy.time import Time
 
 from f110_msgs.msg import WpntArray
 from nav_msgs.msg import Odometry
@@ -19,14 +20,15 @@ class FrenetOdomRepublisher(Node):
     def __init__(self):
         super().__init__('frenet_odom_republisher')
         self.base_frame = self.declare_parameter('base_frame', 'car_state/base_link').value
+        self.max_tf_lag_sec = self.declare_parameter('max_tf_lag_sec', 0.3).value
         self.converter = None
         self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_listener = TransformListener(self.tf_buffer, self, qos=10)
 
         self.frenet_odom_publisher_ = self.create_publisher(Odometry, '/car_state/frenet/odom', 10)
 
         self.create_subscription(WpntArray, '/global_waypoints', self.global_trajectory_callback, LATCHED_QOS)
-        self.create_subscription(Odometry, '/state_estimation/odom', self.odom_callback, 10)
+        self.create_subscription(Odometry, '/state_estimation/odom', self.odom_callback, 1)
 
     def global_trajectory_callback(self, msg):
         wpnts = msg.wpnts
@@ -38,9 +40,17 @@ class FrenetOdomRepublisher(Node):
         if self.converter is None:
             return
         try:
-            tf = self.tf_buffer.lookup_transform('map', self.base_frame, rclpy.time.Time())
+            tf = self.tf_buffer.lookup_transform('map', self.base_frame, Time())
         except Exception as e:
             self.get_logger().warn(f"map->{self.base_frame} lookup failed: {e}", throttle_duration_sec=1.0)
+            return
+
+        lag = abs((Time.from_msg(msg.header.stamp) -
+                   Time.from_msg(tf.header.stamp)).nanoseconds) * 1e-9
+        if lag > self.max_tf_lag_sec:
+            self.get_logger().warn(
+                f"map->{self.base_frame} TF lag {lag:.3f}s; skipping stale Frenet pose",
+                throttle_duration_sec=1.0)
             return
 
         t = tf.transform.translation
@@ -66,6 +76,11 @@ class FrenetOdomRepublisher(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = FrenetOdomRepublisher()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    executor = rclpy.executors.MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
+    try:
+        executor.spin()
+    finally:
+        executor.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()

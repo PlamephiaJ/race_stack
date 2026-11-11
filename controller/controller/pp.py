@@ -261,7 +261,8 @@ class PP_Controller:
         
         self.trailing_command = np.clip(self.opponent[2] - p_value - i_value - d_value, 0, global_speed) 
         if not self.opponent[4] and self.gap_actual > self.gap_should:
-            self.trailing_command = max(self.blind_trailing_speed, self.trailing_command)
+            self.trailing_command = min(
+                global_speed, max(self.blind_trailing_speed, self.trailing_command))
 
         return self.trailing_command
     
@@ -382,4 +383,4 @@ class PP_Controller:
         waypoints_distance = 0.1
         d_index= int(d_distance/waypoints_distance + 0.5)
 
-        return np.array(waypoints[min(len(waypoints) -1, idx_waypoint_behind_car + d_index)]) 
+        return np.array(waypoints[min(len(waypoints) -1, idx_waypoint_behind_car + d_index)])

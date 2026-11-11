@@ -23,6 +23,8 @@ class SynPF(ParticleFiler):
             self.get_parameter('pose_pub_topic').value + '/with_covariance', 10)
         self.get_logger().info(
             f'SynPF active: motion_model={self.motion_model_name}, '
+            f'motion_alpha={self.alpha}, '
+            f'translation_bias_sigma={self.motion_translation_bias_sigma}, '
             f'boxed beams={self.desired_beams}, particles={self.MAX_PARTICLES}, CUDA rmgpu')
 
     def configure_backend(self):
@@ -32,6 +34,7 @@ class SynPF(ParticleFiler):
             'lambda_short': 0.25, 'lam_thresh': 0.1,
             'alpha_1_tum': 0.5, 'alpha_2_tum': 0.015,
             'alpha_3_tum': 1.0, 'alpha_4_tum': 0.1,
+            'motion_translation_bias_sigma': 0.5,
             'alpha_1_amcl': 0.5, 'alpha_2_amcl': 0.5,
             'alpha_3_amcl': 1.0, 'alpha_4_amcl': 0.1,
             'out_of_map_weight': 0.01, 'pose_pub_topic': '/tracked_pose',
@@ -48,6 +51,7 @@ class SynPF(ParticleFiler):
             raise ValueError('SynPF motion_model must be tum, amcl, arc or default')
         self.alpha = tuple(get(f'alpha_{i}_{self.motion_model_name}') for i in range(1, 5)) \
             if self.motion_model_name in ('tum', 'amcl') else None
+        self.motion_translation_bias_sigma = float(get('motion_translation_bias_sigma'))
         self.lam_thresh = get('lam_thresh')
         self.lambda_short = get('lambda_short')
         self.desired_beams = get('des_lidar_beams')
@@ -59,6 +63,9 @@ class SynPF(ParticleFiler):
             raise ValueError('Invalid SynPF beam geometry, lam_thresh or out_of_map_weight')
         if self.alpha is not None and any(a < 0 or not np.isfinite(a) for a in self.alpha):
             raise ValueError('SynPF motion noise coefficients must be finite and nonnegative')
+        if (not np.isfinite(self.motion_translation_bias_sigma)
+                or self.motion_translation_bias_sigma < 0):
+            raise ValueError('SynPF translation bias must be finite and nonnegative')
         if self.motion_model_name == 'arc':
             self.get_logger().warning('SynPF arc motion model is experimental; default tum is preferred.')
         self._scan_geometry = None
@@ -80,7 +87,8 @@ class SynPF(ParticleFiler):
     def motion_model(self, proposal_dist, action):
         if self.motion_model_name in ('tum', 'amcl'):
             Models.differential_motion(proposal_dist, action, self.alpha,
-                                       self.lam_thresh, self.motion_model_name)
+                                       self.lam_thresh, self.motion_model_name,
+                                       translation_bias_sigma=self.motion_translation_bias_sigma)
         elif self.motion_model_name == 'arc':
             Models.arc_motion(proposal_dist, action, self.arc_params)
         else:
@@ -122,9 +130,12 @@ class SynPF(ParticleFiler):
 def main(args=None):
     rclpy.init(args=args)
     node = SynPF()
+    executor = rclpy.executors.MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     finally:
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

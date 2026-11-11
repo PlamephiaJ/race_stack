@@ -222,15 +222,15 @@ class StateMachine(Node):
         horizon = self.params.gb_horizon_m  # Horizon in front of cur_s [m]
 
         for obs in self.obstacles:
-            obs_s = (obs.s_start + obs.s_end) / 2
             obs_s = obs.s_center
             gap = (obs_s - self.cur_s) % self.track_length
             if gap < horizon:
-                obs_d = obs.d_center
-                # Get d wrt to mincurv from the overtaking line
-                if abs(obs_d) < self.params.lateral_width_gb_m:
+                # Check the obstacle's full lateral footprint against the
+                # driving corridor. A wall-side obstacle can be near in s
+                # without occupying the raceline.
+                if (obs.d_right <= self.params.lateral_width_gb_m
+                        and obs.d_left >= -self.params.lateral_width_gb_m):
                     gb_free = False
-                    #self.get_logger().info(f"GB_FREE False, obs dist to ot lane: {obs_d} m")
                     break
 
         return gb_free

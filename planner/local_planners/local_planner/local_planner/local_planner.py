@@ -1,4 +1,6 @@
 import copy
+import math
+import time
 import numpy as np
 import rclpy
 from stack_master.qos import LATCHED_QOS
@@ -7,7 +9,10 @@ from rclpy.time import Time
 from rclpy.parameter import Parameter
 
 import tf2_ros
-from tf_transformations import concatenate_matrices, translation_matrix, quaternion_matrix, euler_from_quaternion
+from tf_transformations import (concatenate_matrices, euler_from_quaternion,
+                                inverse_matrix, quaternion_from_matrix,
+                                quaternion_matrix, translation_from_matrix,
+                                translation_matrix)
 
 from f110_msgs.msg import OTWpntArray, Wpnt, WpntArray
 from std_msgs.msg import Float32MultiArray, String
@@ -53,6 +58,25 @@ class LocalPlanner(Node):
         self.cur_id_ot = 1
         self.max_s = 0.0
         self.current_position = None
+        self.map_to_odom_matrix = None
+        self.last_map_odom_matrix = None
+        self.first_map_odom_seen_at = None
+        self.localization_fault_latched = False
+        if not self.has_parameter("max_tf_lag_sec"):
+            self.declare_parameter("max_tf_lag_sec", 0.3)
+        if not self.has_parameter("max_tf_jump_m"):
+            self.declare_parameter("max_tf_jump_m", 1.0)
+        if not self.has_parameter("max_tf_jump_rad"):
+            self.declare_parameter("max_tf_jump_rad", math.radians(25.0))
+        if not self.has_parameter("tf_jump_arm_sec"):
+            self.declare_parameter("tf_jump_arm_sec", 1.0)
+        self.max_tf_lag_sec = float(self.get_parameter("max_tf_lag_sec").value)
+        self.max_tf_jump_m = float(self.get_parameter("max_tf_jump_m").value)
+        self.max_tf_jump_rad = float(self.get_parameter("max_tf_jump_rad").value)
+        self.tf_jump_arm_sec = float(self.get_parameter("tf_jump_arm_sec").value)
+        if (self.max_tf_lag_sec <= 0.0 or self.max_tf_jump_m <= 0.0
+                or self.max_tf_jump_rad <= 0.0 or self.tf_jump_arm_sec < 0.0):
+            raise ValueError("Invalid TF freshness or jump limit")
         self.glb_wpnts = None
         self.gb_wpnts_arr = None
         self.gb_max_idx = None
@@ -78,7 +102,10 @@ class LocalPlanner(Node):
 
         # create TF listener, to transform local waypoints from the map into the odom frame
         self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        # Keep TF callbacks off the path timer's executor. The recorded path
+        # rate dropped sharply when both ran in one multithreaded executor.
+        self.tf_listener = tf2_ros.TransformListener(
+            self.tf_buffer, None, spin_thread=True, qos=10)
 
         # Subscriptions
         self.create_subscription(WpntArray, "/global_waypoints", self.glb_wpnts_og_cb, LATCHED_QOS)  # from og wpnts
@@ -357,28 +384,15 @@ class LocalPlanner(Node):
 
         return s_ot
 
-    def get_map_to_odom(self):
-        """Returns (trans, rot) of the map->odom transform, or None if unavailable."""
-        try:
-            tf = self.tf_buffer.lookup_transform("odom", "map", Time())
-        except tf2_ros.TransformException as e:
-            self.get_logger().warn(f"[Local Planner] map->odom lookup failed: {e}", throttle_duration_sec=1.0)
-            return None
-        t = tf.transform.translation
-        r = tf.transform.rotation
-        return [t.x, t.y, t.z], [r.x, r.y, r.z, r.w]
-
     def _pub_local_wpnts(self, wpts: WpntArray):
         loc_markers = MarkerArray()
         loc_wpnts = wpts
         loc_wpnts.header.stamp = self.get_clock().now().to_msg()
         loc_wpnts.header.frame_id = "odom"
 
-        map_to_odom = self.get_map_to_odom()
-        if map_to_odom is None:
+        if self.map_to_odom_matrix is None:
             return
-        trans, rot = map_to_odom
-        T = concatenate_matrices(translation_matrix(trans), quaternion_matrix(rot))
+        T = self.map_to_odom_matrix
 
         loc_wpnts.wpnts = [copy.copy(w) for w in loc_wpnts.wpnts]
         for i, wpnt in enumerate(loc_wpnts.wpnts):
@@ -420,18 +434,62 @@ class LocalPlanner(Node):
         self.del_marker_pub.publish(mrk)
 
     def update_pose_from_tf(self) -> bool:
-        """Updates current_position from TF. Returns False if the transform is unavailable."""
+        """Use one fresh map correction and the latest odometry pose."""
         try:
-            tf = self.tf_buffer.lookup_transform("map", self.get_parameter("base_frame").value, Time())
+            map_odom = self.tf_buffer.lookup_transform("map", "odom", Time())
+            odom_base = self.tf_buffer.lookup_transform(
+                "odom", self.get_parameter("base_frame").value, Time())
         except tf2_ros.TransformException as e:
-            self.get_logger().warn(f"[Local Planner] map->base_link lookup failed: {e}", throttle_duration_sec=1.0)
+            self.get_logger().warn(f"[Local Planner] pose TF lookup failed: {e}", throttle_duration_sec=1.0)
             return False
-        x = tf.transform.translation.x
-        y = tf.transform.translation.y
-        q = tf.transform.rotation
-        theta = euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
+
+        lag = abs((Time.from_msg(odom_base.header.stamp) -
+                   Time.from_msg(map_odom.header.stamp)).nanoseconds) * 1e-9
+        if lag > self.max_tf_lag_sec:
+            self.get_logger().warn(
+                f"[Local Planner] map/odom TF lag {lag:.3f}s; skipping stale path",
+                throttle_duration_sec=1.0)
+            return False
+
+        def matrix(tf):
+            t = tf.transform.translation
+            q = tf.transform.rotation
+            return concatenate_matrices(
+                translation_matrix([t.x, t.y, t.z]),
+                quaternion_matrix([q.x, q.y, q.z, q.w]))
+
+        map_odom_matrix = matrix(map_odom)
+        odom_base_matrix = matrix(odom_base)
+        map_base_matrix = concatenate_matrices(map_odom_matrix, odom_base_matrix)
+        now = time.monotonic()
+        if self.first_map_odom_seen_at is None:
+            self.first_map_odom_seen_at = now
+        if self.last_map_odom_matrix is not None:
+            previous_map_base = concatenate_matrices(
+                self.last_map_odom_matrix, odom_base_matrix)
+            jump_m = math.hypot(
+                map_base_matrix[0, 3] - previous_map_base[0, 3],
+                map_base_matrix[1, 3] - previous_map_base[1, 3])
+            old_yaw = euler_from_quaternion(
+                quaternion_from_matrix(previous_map_base))[2]
+            new_yaw = euler_from_quaternion(quaternion_from_matrix(map_base_matrix))[2]
+            jump_rad = abs(math.remainder(new_yaw - old_yaw, 2.0 * math.pi))
+            if (now - self.first_map_odom_seen_at >= self.tf_jump_arm_sec
+                    and (jump_m > self.max_tf_jump_m
+                         or jump_rad > self.max_tf_jump_rad)):
+                self.localization_fault_latched = True
+                self.get_logger().error(
+                    f"[Local Planner] localization correction jumped "
+                    f"{jump_m:.2f}m / {math.degrees(jump_rad):.1f}deg; "
+                    "stopping until localization and planner are restarted")
+                return False
+        self.last_map_odom_matrix = map_odom_matrix
+        x, y, _ = translation_from_matrix(map_base_matrix)
+        q = quaternion_from_matrix(map_base_matrix)
+        theta = euler_from_quaternion(q)[2]
 
         self.current_position = [x, y, theta]
+        self.map_to_odom_matrix = inverse_matrix(map_odom_matrix)
         return True
 
     def update_frenet_from_pose(self):
@@ -505,12 +563,23 @@ class LocalPlanner(Node):
     def FTGOnly(self):
         return []
 
+    def publish_stop_path(self):
+        stop_path = WpntArray()
+        stop_path.header.stamp = self.get_clock().now().to_msg()
+        stop_path.header.frame_id = "odom"
+        self.loc_wpnt_pub.publish(stop_path)
+
     def loop(self):
         """
         Main loop of the local planner.
         """
+        if self.localization_fault_latched:
+            self.publish_stop_path()
+            return
         # update position, skip this iteration if TF is not available yet
         if not self.update_pose_from_tf():
+            if self.localization_fault_latched:
+                self.publish_stop_path()
             return
         self.update_frenet_from_pose()
 
@@ -553,10 +622,14 @@ def main(args=None):
     rclpy.init(args=args)
 
     local_planner = LocalPlanner()
-    rclpy.spin(local_planner)
-
-    local_planner.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(local_planner)
+    finally:
+        local_planner.tf_listener.executor.shutdown()
+        local_planner.tf_listener.dedicated_listener_thread.join()
+        local_planner.tf_listener.node.destroy_node()
+        local_planner.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

@@ -77,6 +77,24 @@ def test_small_motion_is_integrated_without_artificial_stationary_drift(action):
     assert np.allclose(particles, action)
 
 
+def test_translation_bias_can_be_removed_without_changing_odom_motion():
+    class MeanOnlyRng:
+        @staticmethod
+        def normal(loc=0.0, scale=1.0, size=None):
+            return np.full(size, loc)
+
+    odom_centered = np.zeros((4, 3))
+    upstream_centered = np.zeros((4, 3))
+    for particles, bias in ((odom_centered, 0.0),
+                            (upstream_centered, 0.5)):
+        Models.differential_motion(
+            particles, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0],
+            rng=MeanOnlyRng(), translation_bias_sigma=bias)
+
+    assert np.allclose(odom_centered[:, 0], 1.0)
+    assert np.allclose(upstream_centered[:, 0], 1.5)
+
+
 def test_arc_model_has_finite_zero_yaw_limit():
     params = dict(x=0.0, y=0.0, theta=0.0, xy=0.0, x_min=0.0,
                   y_min=0.0, y_max=0.0, theta_min=0.0, xy_min_x=0.0)

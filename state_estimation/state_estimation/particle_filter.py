@@ -200,7 +200,9 @@ class ParticleFiler(Node):
 
         # these topics are for coordinate space things
         self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        # Keep recent transforms available even when a scan update takes longer
+        # than several odometry TF publications.
+        self.tf_listener = TransformListener(self.tf_buffer, self, qos=10)
         self.pub_tf = TransformBroadcaster(self)
         self.tf_lookup_warning_emitted = False
 
@@ -860,9 +862,12 @@ class ParticleFiler(Node):
 def main(args=None):
     rclpy.init(args=args)
     pf = ParticleFiler()
+    executor = rclpy.executors.MultiThreadedExecutor(num_threads=2)
+    executor.add_node(pf)
     try:
-        rclpy.spin(pf)
+        executor.spin()
     finally:
+        executor.shutdown()
         pf.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

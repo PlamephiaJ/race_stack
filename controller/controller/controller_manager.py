@@ -1,10 +1,13 @@
 import os
+import math
+import time
 import yaml
 import rclpy
 from stack_master.qos import LATCHED_QOS
 import numpy as np
 from scipy.spatial.transform import Rotation
 from rclpy.node import Node
+from rclpy.time import Time
 from rclpy.client import Client
 from rcl_interfaces.srv import GetParameters
 
@@ -69,6 +72,46 @@ class Controller(Node):
         self.position_in_map = None
         self.position_in_map_frenet = None
         self.waypoint_safety_counter = 0
+        self.last_odom_time = None
+        self.last_frenet_time = None
+        self.last_waypoints_time = None
+        self.last_odom_stamp_ns = None
+        self.last_frenet_stamp_ns = None
+        self.last_waypoints_stamp_ns = None
+        self.last_scan_time = None
+        self.last_scan_stamp_ns = None
+        self.scan = None
+        self.last_safe_steer = 0.0
+        self.front_stop_latched = False
+        if not self.has_parameter('max_input_age_sec'):
+            self.declare_parameter('max_input_age_sec', 0.5)
+        if not self.has_parameter('max_odom_age_sec'):
+            self.declare_parameter('max_odom_age_sec', 0.3)
+        if not self.has_parameter('max_path_start_rear_m'):
+            self.declare_parameter('max_path_start_rear_m', 0.75)
+        if not self.has_parameter('front_guard_enabled'):
+            self.declare_parameter('front_guard_enabled', True)
+        if not self.has_parameter('front_clearance_m'):
+            self.declare_parameter('front_clearance_m', 0.30)
+        if not self.has_parameter('front_release_m'):
+            self.declare_parameter('front_release_m', 0.65)
+        if not self.has_parameter('front_decel_mps2'):
+            self.declare_parameter('front_decel_mps2', 2.0)
+        if not self.has_parameter('front_reaction_sec'):
+            self.declare_parameter('front_reaction_sec', 0.10)
+        self.max_input_age_sec = float(self.get_parameter('max_input_age_sec').value)
+        self.max_odom_age_sec = float(self.get_parameter('max_odom_age_sec').value)
+        self.max_path_start_rear_m = float(self.get_parameter('max_path_start_rear_m').value)
+        self.front_guard_enabled = bool(self.get_parameter('front_guard_enabled').value)
+        self.front_clearance_m = float(self.get_parameter('front_clearance_m').value)
+        self.front_release_m = float(self.get_parameter('front_release_m').value)
+        self.front_decel_mps2 = float(self.get_parameter('front_decel_mps2').value)
+        self.front_reaction_sec = float(self.get_parameter('front_reaction_sec').value)
+        if (self.max_input_age_sec <= 0 or self.max_odom_age_sec <= 0
+                or self.max_path_start_rear_m < 0 or self.front_clearance_m <= 0
+                or self.front_release_m <= self.front_clearance_m
+                or self.front_decel_mps2 <= 0 or self.front_reaction_sec < 0):
+            raise ValueError('Invalid controller input or front clearance limit')
 
         # buffers for improved computation
         self.waypoint_array_buf = MarkerArray()
@@ -100,14 +143,14 @@ class Controller(Node):
         self.create_subscription(WpntArray, '/global_waypoints', self.track_length_cb, LATCHED_QOS)
         self.create_subscription(ObstacleArray, '/perception/obstacles', self.obstacle_cb, 10)
         self.create_subscription(WpntArray, '/local_waypoints', self.local_waypoint_cb,
-                                 10)  # waypoints (x, y, v, norm trackbound, s, kappa)
-        self.create_subscription(Odometry, '/state_estimation/odom', self.odom_cb, 10)  # car speed
+                                 1)  # waypoints (x, y, v, norm trackbound, s, kappa)
+        self.create_subscription(Odometry, '/state_estimation/odom', self.odom_cb, 1)  # car speed
         self.create_subscription(
             Odometry,
             '/car_state/frenet/odom',
             self.car_state_frenet_cb,
-            10)  # car frenet coordinates
-        self.create_subscription(LaserScan, '/scan', self.scan_cb, 10)  # lidar scan
+            1)  # car frenet coordinates
+        self.create_subscription(LaserScan, '/scan', self.scan_cb, 1)  # lidar scan
 
         # Block until relevant data is here
         self.wait_for_messages()
@@ -380,6 +423,8 @@ class Controller(Node):
 
     def scan_cb(self, data: LaserScan):
         self.scan = data
+        self.last_scan_time = time.monotonic()
+        self.last_scan_stamp_ns = Time.from_msg(data.header.stamp).nanoseconds
 
     def track_length_cb(self, data: WpntArray):
         self.track_length = data.wpnts[-1].s_m
@@ -411,6 +456,8 @@ class Controller(Node):
             self.opponent = None
 
     def odom_cb(self, data: Odometry):
+        self.last_odom_time = time.monotonic()
+        self.last_odom_stamp_ns = Time.from_msg(data.header.stamp).nanoseconds
         self.speed_now = data.twist.twist.linear.x
         x = data.pose.pose.position.x
         y = data.pose.pose.position.y
@@ -421,6 +468,8 @@ class Controller(Node):
         self.position_in_map = np.array([x, y, theta])[np.newaxis]
 
     def local_waypoint_cb(self, data: WpntArray):
+        self.last_waypoints_time = time.monotonic()
+        self.last_waypoints_stamp_ns = Time.from_msg(data.header.stamp).nanoseconds
         self.waypoint_list_in_map = []
         for waypoint in data.wpnts:
             waypoint_in_map = [waypoint.x_m, waypoint.y_m]
@@ -453,6 +502,8 @@ class Controller(Node):
         self.acc_now[0] = -data.linear_acceleration.y  # vesc is rotated 90 deg, so (-acc_y) == (long_acc)
 
     def car_state_frenet_cb(self, data: Odometry):
+        self.last_frenet_time = time.monotonic()
+        self.last_frenet_stamp_ns = Time.from_msg(data.header.stamp).nanoseconds
         s = data.pose.pose.position.x
         d = data.pose.pose.position.y
         vs = data.twist.twist.linear.x
@@ -550,11 +601,100 @@ class Controller(Node):
     #############
     # MAIN LOOP #
     #############
+    def inputs_ready(self, now):
+        """Reject missing, delayed, or clearly misplaced control inputs."""
+        ros_now_ns = self.get_clock().now().nanoseconds
+        for name, received, stamp_ns, limit in (
+                ('odometry', self.last_odom_time, self.last_odom_stamp_ns,
+                 self.max_odom_age_sec),
+                ('Frenet pose', self.last_frenet_time, self.last_frenet_stamp_ns,
+                 self.max_input_age_sec),
+                ('local waypoints', self.last_waypoints_time,
+                 self.last_waypoints_stamp_ns, self.max_input_age_sec)):
+            receive_age = float('inf') if received is None else now - received
+            stamp_age = (float('inf') if stamp_ns is None else
+                         (ros_now_ns - stamp_ns) * 1e-9)
+            if receive_age > limit or abs(stamp_age) > limit:
+                self.get_logger().warning(
+                    f'[controller_manager] {name} is stale '
+                    f'(receive {receive_age:.2f}s, stamp {stamp_age:.2f}s); stopping',
+                    throttle_duration_sec=1.0)
+                return False
+
+        if (self.position_in_map is None or self.waypoint_array_in_map is None
+                or self.waypoint_array_in_map.ndim != 2
+                or len(self.waypoint_array_in_map) == 0):
+            self.get_logger().warning(
+                '[controller_manager] No usable local waypoints; stopping',
+                throttle_duration_sec=1.0)
+            return False
+
+        x, y, yaw = self.position_in_map[0]
+        first = self.waypoint_array_in_map[0]
+        forward = ((first[0] - x) * math.cos(yaw)
+                   + (first[1] - y) * math.sin(yaw))
+        if forward < -self.max_path_start_rear_m:
+            self.get_logger().warning(
+                f'[controller_manager] Local path starts {abs(forward):.2f} m behind car; stopping',
+                throttle_duration_sec=1.0)
+            return False
+        return True
+
+    def front_obstacle_stop(self, now):
+        """Keep braking until the LiDAR sees enough space to move again."""
+        if not self.front_guard_enabled:
+            return False
+        ros_now_ns = self.get_clock().now().nanoseconds
+        if (self.scan is None or self.last_scan_time is None
+                or self.last_scan_stamp_ns is None
+                or now - self.last_scan_time > self.max_input_age_sec
+                or abs(ros_now_ns - self.last_scan_stamp_ns) * 1e-9 > self.max_input_age_sec):
+            self.get_logger().warning(
+                '[controller_manager] Front scan is stale; stopping',
+                throttle_duration_sec=1.0)
+            return True
+
+        scan = self.scan
+        front = sorted(
+            distance for index, distance in enumerate(scan.ranges)
+            if abs(scan.angle_min + index * scan.angle_increment) <= math.radians(12.0)
+            and math.isfinite(distance)
+            and scan.range_min <= distance <= scan.range_max)
+        if not front:
+            self.get_logger().warning(
+                '[controller_manager] No valid front scan beams; stopping',
+                throttle_duration_sec=1.0)
+            return True
+
+        distance = front[min(3, len(front) - 1)]
+        speed = max(0.0, self.speed_now)
+        stop_distance = (self.front_clearance_m + speed * self.front_reaction_sec
+                         + speed * speed / (2.0 * self.front_decel_mps2))
+        if distance < stop_distance:
+            self.front_stop_latched = True
+        if self.front_stop_latched and distance > max(
+                self.front_release_m, stop_distance + 0.2):
+            self.front_stop_latched = False
+        if self.front_stop_latched:
+            self.get_logger().warning(
+                f'[controller_manager] Front obstacle {distance:.2f}m '
+                f'(limit {stop_distance:.2f}m); stopping',
+                throttle_duration_sec=1.0)
+        return self.front_stop_latched
+
     def control_loop(self):
-        if self.mode == "MAP":
+        now = time.monotonic()
+        if self.mode in ("MAP", "PP") and (
+                not self.inputs_ready(now) or self.front_obstacle_stop(now)):
+            speed, steer = 0.0, self.last_safe_steer
+        elif self.mode == "MAP":
             speed, steer = self.map_cycle()
+            if speed > 0.0:
+                self.last_safe_steer = steer
         elif self.mode == "PP":
             speed, steer = self.pp_cycle()
+            if speed > 0.0:
+                self.last_safe_steer = steer
         elif self.mode == "FTG":
             speed, steer = self.ftg_cycle()
 

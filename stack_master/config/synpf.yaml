@@ -34,8 +34,13 @@ synpf:
     motion_model: tum
     alpha_1_tum: 0.5
     alpha_2_tum: 0.015
-    alpha_3_tum: 1.0
+    # EKF odometry is already close to scan-matched travel on this track.
+    # 1.0 spread allowed the filter to switch between similar corridor poses.
+    alpha_3_tum: 0.1
     alpha_4_tum: 0.1
+    # EKF odometry on this car already tracks progress; the upstream +0.5 sigma
+    # forward bias made the prediction advance about 50% faster between scans.
+    motion_translation_bias_sigma: 0.0
     lam_thresh: 0.1
     alpha_1_amcl: 0.5
     alpha_2_amcl: 0.5
