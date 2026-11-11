@@ -20,7 +20,7 @@
     # d is the filtered/clipped front range BEFORE obstacle bubbles.
     # At d <= 0.20 m the target is min_speed; startup still ramps from zero.
     max_speed: 4.0              # m/s; upper bound of desired speed; direct-node fallback is 1.0.
-    min_speed: 2.0             # m/s; minimum driving target, including within 0.20 m; 0 <= min_speed <= max_speed.
+    min_speed: 2.3             # m/s; minimum driving target, including within 0.20 m; 0 <= min_speed <= max_speed.
     speed_distance_gain: 0.9   # (m/s)/m; > 0.
     max_acceleration: 1.0      # m/s^2; command acceleration limit, including startup; > 0.
     max_deceleration: 2.5      # m/s^2; command deceleration limit; > 0.
