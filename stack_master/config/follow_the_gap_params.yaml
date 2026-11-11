@@ -5,7 +5,7 @@
   ros__parameters:
     # LiDAR processing / obstacle clearance.
     bubble_radius: 0.25         # m; clearance around disparities and closest point; >= 0.
-    max_distance: 3.5           # m; clip processed ranges at this distance; > 0.
+    max_distance: 4.0           # m; clip processed ranges at this distance; > 0.
     disparity_thresh: 0.15      # m; adjacent-range jump that creates a bubble; >= 0.
     scan_range_offset: 180     # beams discarded at EACH end; 0 uses the full scan.
     preprocess_conv_size: 3    # beams in the moving-average filter; integer >= 1.
