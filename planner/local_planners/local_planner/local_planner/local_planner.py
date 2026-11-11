@@ -5,6 +5,7 @@ import numpy as np
 import rclpy
 from stack_master.qos import LATCHED_QOS
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from rclpy.parameter import Parameter
 
@@ -15,6 +16,7 @@ from tf_transformations import (concatenate_matrices, euler_from_quaternion,
                                 translation_matrix)
 
 from f110_msgs.msg import OTWpntArray, Wpnt, WpntArray
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from std_msgs.msg import Float32MultiArray, String
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -61,7 +63,11 @@ class LocalPlanner(Node):
         self.map_to_odom_matrix = None
         self.last_map_odom_matrix = None
         self.first_map_odom_seen_at = None
-        self.localization_fault_latched = False
+        self.localization_recovery_hold_until = 0.0
+        self.localization_recovery_slow_until = 0.0
+        self.initialpose_target = None
+        self.initialpose_received_ns = None
+        self.initialpose_received_at = None
         if not self.has_parameter("max_tf_lag_sec"):
             self.declare_parameter("max_tf_lag_sec", 0.3)
         if not self.has_parameter("max_tf_jump_m"):
@@ -70,12 +76,25 @@ class LocalPlanner(Node):
             self.declare_parameter("max_tf_jump_rad", math.radians(25.0))
         if not self.has_parameter("tf_jump_arm_sec"):
             self.declare_parameter("tf_jump_arm_sec", 1.0)
+        if not self.has_parameter("tf_jump_hold_sec"):
+            self.declare_parameter("tf_jump_hold_sec", 0.3)
+        if not self.has_parameter("tf_jump_slow_sec"):
+            self.declare_parameter("tf_jump_slow_sec", 2.0)
+        if not self.has_parameter("tf_jump_recovery_speed_mps"):
+            self.declare_parameter("tf_jump_recovery_speed_mps", 0.3)
         self.max_tf_lag_sec = float(self.get_parameter("max_tf_lag_sec").value)
         self.max_tf_jump_m = float(self.get_parameter("max_tf_jump_m").value)
         self.max_tf_jump_rad = float(self.get_parameter("max_tf_jump_rad").value)
         self.tf_jump_arm_sec = float(self.get_parameter("tf_jump_arm_sec").value)
+        self.tf_jump_hold_sec = float(self.get_parameter("tf_jump_hold_sec").value)
+        self.tf_jump_slow_sec = float(self.get_parameter("tf_jump_slow_sec").value)
+        self.tf_jump_recovery_speed_mps = float(
+            self.get_parameter("tf_jump_recovery_speed_mps").value)
         if (self.max_tf_lag_sec <= 0.0 or self.max_tf_jump_m <= 0.0
-                or self.max_tf_jump_rad <= 0.0 or self.tf_jump_arm_sec < 0.0):
+                or self.max_tf_jump_rad <= 0.0 or self.tf_jump_arm_sec < 0.0
+                or self.tf_jump_hold_sec < 0.0
+                or self.tf_jump_slow_sec < self.tf_jump_hold_sec
+                or self.tf_jump_recovery_speed_mps <= 0.0):
             raise ValueError("Invalid TF freshness or jump limit")
         self.glb_wpnts = None
         self.gb_wpnts_arr = None
@@ -106,6 +125,9 @@ class LocalPlanner(Node):
         # rate dropped sharply when both ran in one multithreaded executor.
         self.tf_listener = tf2_ros.TransformListener(
             self.tf_buffer, None, spin_thread=True, qos=10)
+        self.create_subscription(
+            PoseWithCovarianceStamped, "/initialpose", self.initialpose_cb,
+            qos_profile_sensor_data)
 
         # Subscriptions
         self.create_subscription(WpntArray, "/global_waypoints", self.glb_wpnts_og_cb, LATCHED_QOS)  # from og wpnts
@@ -395,7 +417,11 @@ class LocalPlanner(Node):
         T = self.map_to_odom_matrix
 
         loc_wpnts.wpnts = [copy.copy(w) for w in loc_wpnts.wpnts]
+        recovering = time.monotonic() < self.localization_recovery_slow_until
         for i, wpnt in enumerate(loc_wpnts.wpnts):
+            if recovering:
+                wpnt.vx_mps = min(wpnt.vx_mps,
+                                  self.tf_jump_recovery_speed_mps)
             # transform from map to odom
             p_map = [wpnt.x_m, wpnt.y_m, 0.0, 1.0]
             p_odom = T.dot(p_map)
@@ -433,6 +459,32 @@ class LocalPlanner(Node):
         mrk.markers[0].action = Marker.DELETEALL
         self.del_marker_pub.publish(mrk)
 
+    def initialpose_cb(self, msg: PoseWithCovarianceStamped):
+        """Wait for PF to apply an explicit map pose before planning again."""
+        if msg.header.frame_id.lstrip('/') != 'map':
+            self.get_logger().warning(
+                '[Local Planner] Ignoring initial pose outside map frame')
+            return
+        pose = msg.pose.pose
+        q = pose.orientation
+        quaternion = [q.x, q.y, q.z, q.w]
+        if (not np.all(np.isfinite([pose.position.x, pose.position.y,
+                                     *quaternion]))
+                or np.linalg.norm(quaternion) < 1e-6):
+            self.get_logger().warning(
+                '[Local Planner] Ignoring invalid initial pose')
+            return
+        yaw = euler_from_quaternion(quaternion)[2]
+        self.initialpose_target = (pose.position.x, pose.position.y, yaw)
+        self.initialpose_received_ns = self.get_clock().now().nanoseconds
+        self.initialpose_received_at = time.monotonic()
+        self.map_to_odom_matrix = None
+        self.current_position = None
+        self.localization_recovery_hold_until = 0.0
+        self.localization_recovery_slow_until = 0.0
+        self.get_logger().info(
+            '[Local Planner] Explicit initial pose received; waiting for PF correction')
+
     def update_pose_from_tf(self) -> bool:
         """Use one fresh map correction and the latest odometry pose."""
         try:
@@ -462,6 +514,29 @@ class LocalPlanner(Node):
         odom_base_matrix = matrix(odom_base)
         map_base_matrix = concatenate_matrices(map_odom_matrix, odom_base_matrix)
         now = time.monotonic()
+        if self.initialpose_target is not None:
+            if Time.from_msg(map_odom.header.stamp).nanoseconds <= self.initialpose_received_ns:
+                return False
+            target_x, target_y, target_yaw = self.initialpose_target
+            pose_x, pose_y, _ = translation_from_matrix(map_base_matrix)
+            pose_yaw = euler_from_quaternion(
+                quaternion_from_matrix(map_base_matrix))[2]
+            position_error = math.hypot(pose_x - target_x, pose_y - target_y)
+            yaw_error = abs(math.remainder(pose_yaw - target_yaw, 2.0 * math.pi))
+            if (position_error > 1.0 or yaw_error > math.radians(45.0)):
+                if now - self.initialpose_received_at < 1.5:
+                    return False
+                self.localization_recovery_slow_until = now + self.tf_jump_slow_sec
+                self.get_logger().warning(
+                    '[Local Planner] PF did not settle near initial pose; '
+                    'resuming at recovery speed')
+            self.initialpose_target = None
+            self.initialpose_received_ns = None
+            self.initialpose_received_at = None
+            self.last_map_odom_matrix = map_odom_matrix
+            self.first_map_odom_seen_at = now
+            self.get_logger().info(
+                '[Local Planner] Explicit initial pose applied as new TF baseline')
         if self.first_map_odom_seen_at is None:
             self.first_map_odom_seen_at = now
         if self.last_map_odom_matrix is not None:
@@ -477,12 +552,23 @@ class LocalPlanner(Node):
             if (now - self.first_map_odom_seen_at >= self.tf_jump_arm_sec
                     and (jump_m > self.max_tf_jump_m
                          or jump_rad > self.max_tf_jump_rad)):
-                self.localization_fault_latched = True
-                self.get_logger().error(
+                # After the first jump, use the new correction as a baseline.
+                # Subsequent jumps during recovery extend the slow period
+                # without repeatedly stopping the car.
+                already_recovering = now < self.localization_recovery_slow_until
+                self.last_map_odom_matrix = map_odom_matrix
+                self.localization_recovery_slow_until = now + self.tf_jump_slow_sec
+                if not already_recovering:
+                    self.localization_recovery_hold_until = now + self.tf_jump_hold_sec
+                    self.map_to_odom_matrix = None
+                self.get_logger().warning(
                     f"[Local Planner] localization correction jumped "
                     f"{jump_m:.2f}m / {math.degrees(jump_rad):.1f}deg; "
-                    "stopping until localization and planner are restarted")
-                return False
+                    f"limiting path speed to "
+                    f"{self.tf_jump_recovery_speed_mps:.1f}m/s",
+                    throttle_duration_sec=1.0)
+                if not already_recovering:
+                    return False
         self.last_map_odom_matrix = map_odom_matrix
         x, y, _ = translation_from_matrix(map_base_matrix)
         q = quaternion_from_matrix(map_base_matrix)
@@ -573,12 +659,13 @@ class LocalPlanner(Node):
         """
         Main loop of the local planner.
         """
-        if self.localization_fault_latched:
+        if time.monotonic() < self.localization_recovery_hold_until:
             self.publish_stop_path()
             return
         # update position, skip this iteration if TF is not available yet
         if not self.update_pose_from_tf():
-            if self.localization_fault_latched:
+            if (self.initialpose_target is not None
+                    or time.monotonic() < self.localization_recovery_hold_until):
                 self.publish_stop_path()
             return
         self.update_frenet_from_pose()

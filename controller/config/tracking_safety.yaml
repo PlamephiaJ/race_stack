@@ -1,0 +1,25 @@
+/**:
+  ros__parameters:
+    # Minimum recovery CAP; lower path/trailing/stop requests still take priority.
+    recovery_speed_mps: 0.5
+    # Toward/parallel to path: interpolate from requested speed to the crawl cap.
+    recovery_full_speed_distance_m: 0.35
+    recovery_min_speed_distance_m: 1.5
+    recovery_full_speed_heading_deg: 25.0
+    recovery_min_speed_heading_deg: 90.0
+    # Allow small outward heading noise; reversed/diverging motion uses crawl cap.
+    recovery_direction_tolerance_deg: 10.0
+    # Smooth the interpolated cap in both directions; wrong direction caps at 0.5.
+    recovery_release_accel_mps2: 1.0
+
+    front_clearance_m: 0.30
+    # BLUE 014101: measured end-to-end wheel deceleration ~1.0 m/s^2.
+    # 0.8 includes margin; it is NOT the actuator's 2.5 m/s^2 command slew.
+    # Other vehicles and changes to actuation limits need fresh measurements.
+    front_decel_mps2: 0.8
+    # Emergency stop uses current measured speed and scan-age-corrected TTC.
+    # Release on TTC recovery, not after forcing the car to a standstill.
+    front_ttc_stop_sec: 1.0
+    front_ttc_release_sec: 1.2
+    # Continuous FTG-style speed cap targets TTC >= 1/0.8 = 1.25 seconds.
+    front_speed_margin: 0.8

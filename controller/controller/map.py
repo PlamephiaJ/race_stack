@@ -85,7 +85,7 @@ class MAP_Controller:
 
         self.steer_lookup = LookupSteerAngle(self.LUT_name, logger_info)
     # main loop    
-    def main_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent, position_in_map_frenet, acc_now, track_length):
+    def main_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent, position_in_map_frenet, acc_now, track_length, steering_speed=None):
         # Updating parameters from manager
         self.state = state
         self.position_in_map = position_in_map
@@ -95,6 +95,7 @@ class MAP_Controller:
         self.position_in_map_frenet = position_in_map_frenet
         self.acc_now = acc_now
         self.track_length = track_length
+        self.steering_speed = steering_speed
         ## PREPROCESS ##
         # speed vector
         yaw = self.position_in_map[0, 2]
@@ -153,6 +154,10 @@ class MAP_Controller:
             idx_la_steer = self.nearest_waypoint(la_position_steer, self.waypoint_array_in_map[:, :2])
             speed_la_for_lu = self.waypoint_array_in_map[idx_la_steer, 2]
         speed_for_lu = self.speed_adjust_lat_err(speed_la_for_lu, lat_e_norm)
+        if self.steering_speed is not None:
+            # During a stop the reference speed is no longer the physical speed.
+            # Keep steering for the moving vehicle rather than the trailing/stop target.
+            speed_for_lu = max(0.0, self.steering_speed)
 
         L1_vector = np.array([L1_point[0] - self.position_in_map[0, 0], L1_point[1] - self.position_in_map[0, 1]])
         if np.linalg.norm(L1_vector) == 0:

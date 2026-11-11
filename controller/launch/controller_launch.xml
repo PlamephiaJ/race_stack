@@ -3,6 +3,7 @@
   <arg name="LU_table" default="NUC5_hangar_pacejka"/>
   <arg name="mode" default="MAP" description="Mode of operation: MAP / PP / (FTG). methods in brackets have not been implemented"/> <!-- TODO implement PP and MAPPING -->
   <arg name="sim_opp" default="False" description="True to remap topics to the simulated opponent ones" />
+  <arg name="safety_param_file" default="$(find-pkg-share controller)/config/tracking_safety.yaml" />
 
   <!--  launch L1 controller -->
   <group>
@@ -15,6 +16,7 @@
     <set_remap from="/local_waypoints" to="/opp_racecar/local_waypoints" if="$(var sim_opp)" />
     <set_remap from="/perception/obstacles" to="/opp_racecar/perception/obstacles" if="$(var sim_opp)" />
     <node pkg="controller" name="controller" exec="controller">
+        <param from="$(var safety_param_file)"/>
         <param name="mode" value="$(var mode)"/>
         <param name="LU_table" value="$(var LU_table)"/>
     </node>

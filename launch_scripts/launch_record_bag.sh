@@ -36,6 +36,8 @@ TOPICS=(
     /tracked_pose
     /tracked_pose/with_covariance
     /pf/laser_global_pose
+    /initialpose
+    /clicked_point
     /sensors/core
     /rosout
 )

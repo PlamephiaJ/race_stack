@@ -1,6 +1,6 @@
 # Wildcard also applies to /opp_racecar/reactive_follow_gap_node.
 /**:
   ros__parameters:
-    max_speed: 2.0               # Maximum commanded speed (m/s).
+    max_speed: 4.0               # Maximum commanded speed (m/s).
     max_deceleration: 2.5        # Maximum allowed deceleration (m/s^2).
     minimum_gap_angle: 0.12     # Minimum navigable gap width (rad).
