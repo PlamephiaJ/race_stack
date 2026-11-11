@@ -3,7 +3,6 @@
 import math
 
 import numpy as np
-from controller.speed_profiles import ftg_speed_target
 
 
 def path_tracking_errors(pose, waypoints):
@@ -91,26 +90,43 @@ class RecoverySpeedLimiter:
         return result
 
 
-def front_speed_limit(distance, clearance, ttc_stop, scan_age, deceleration, margin=0.8):
-    """Use FTG's continuous speed target, with headroom above the TTC stop gate."""
-    values = (distance, clearance, ttc_stop, scan_age, deceleration, margin)
-    if (not all(math.isfinite(v) for v in values) or deceleration <= 0
-            or distance < 0 or clearance < 0 or ttc_stop <= 0
-            or scan_age < 0 or not 0 < margin < 1):
-        raise ValueError('Invalid front speed envelope input')
-    ftg_target = ftg_speed_target(distance, float('inf'), deceleration, clearance)
-    return min(ftg_target, margin * distance / (ttc_stop + scan_age))
+def collision_speed_limit(distance, speed, scan_age, clearance=0.3, gain=0.8):
+    """Continuous linear speed cap from current forward free distance."""
+    values = (distance, speed, scan_age, clearance, gain)
+    if (not all(math.isfinite(v) for v in values) or distance < 0
+            or scan_age < 0 or clearance < 0 or gain <= 0):
+        raise ValueError('Invalid collision speed input')
+    current_distance = max(0.0, distance - max(speed, 0.0) * scan_age)
+    return gain * max(current_distance - clearance, 0.0)
 
 
-def time_to_collision(distance, measured_speed, scan_age=0.0):
-    """Forward range / measured forward speed, extrapolated to the current time.
+def freshness_scale(age, limit):
+    """Fade linearly from full speed at half the age limit to zero at the limit."""
+    if not math.isfinite(limit) or limit <= 0:
+        raise ValueError('Invalid freshness limit')
+    if not math.isfinite(age):
+        return 0.0
+    return float(np.clip(2.0 * (limit - max(0.0, age)) / limit, 0, 1))
 
-    Do not use the applied reference as though it were actual vehicle motion,
-    and do not subtract the desired stopping clearance from collision range.
-    """
-    if (not all(math.isfinite(v) for v in (distance, measured_speed, scan_age))
-            or distance < 0 or scan_age < 0):
-        raise ValueError('Invalid TTC input')
-    if measured_speed <= 1e-3:
-        return float('inf')
-    return max(0.0, distance / measured_speed - scan_age)
+
+class SpeedSmoother:
+    """Bound autonomous reference changes, including zero/invalid-input targets."""
+
+    def __init__(self, acceleration=1.0, deceleration=1.0):
+        if not all(math.isfinite(v) and v > 0 for v in (acceleration, deceleration)):
+            raise ValueError('Invalid speed slew limits')
+        self.acceleration, self.deceleration = acceleration, deceleration
+        self.speed = None
+
+    def update(self, target, dt, applied_speed=None):
+        if not math.isfinite(target):
+            target = 0.0
+        if self.speed is None:
+            self.speed = max(0.0, applied_speed) if applied_speed is not None and math.isfinite(applied_speed) else 0.0
+        dt = min(max(dt, 0.0), 0.1) if math.isfinite(dt) else 0.0
+        # Avoid winding the reference up while the physical deadman gate is off.
+        if applied_speed is not None and math.isfinite(applied_speed):
+            target = min(target, max(0.0, applied_speed) + self.acceleration * .1)
+        delta = max(target, 0.0) - self.speed
+        self.speed += float(np.clip(delta, -self.deceleration * dt, self.acceleration * dt))
+        return self.speed

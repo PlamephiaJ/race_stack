@@ -8,7 +8,7 @@
         default="$(find-pkg-share stack_master)/config/follow_the_gap_params.yaml" />
     <!-- Empty overrides preserve the values from param_file. -->
     <arg name="max_speed" default=""
-        description="Maximum commanded speed in m/s; defaults to the YAML value (1.0)" />
+        description="Maximum desired speed in m/s; defaults to the YAML value" />
     <arg name="max_deceleration" default=""
         description="Maximum allowed deceleration in m/s^2; defaults to the YAML value (2.5)" />
     <arg name="minimum_gap_angle" default=""

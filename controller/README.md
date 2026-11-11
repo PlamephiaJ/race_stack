@@ -54,47 +54,43 @@ gets approximately 1.57 m/s when converging, versus 0.5 m/s when diverging.
 Lower raceline/trailing limits and zero requests still take priority: 0.5 m/s
 is the minimum recovery cap, not a forced minimum vehicle speed.
 Geometry uses local x/y and vehicle pose in odom; it does not compare map-frame
-`psi_rad` with odom yaw. Missing/expired/invalid inputs stop the vehicle and
-restart acquisition at low speed.
+`psi_rad` with odom yaw. Missing/expired/invalid inputs fade the reference
+toward zero and restart acquisition at low speed.
 
-Front speed is now controlled continuously before an emergency occurs.
-The distance speed law matches standalone FTG: below 1.2 m it requests
-0.96 m/s, between 1.2 and 4 m it requests `0.9 * distance + 0.2`, and it is
-bounded by `sqrt(2 * deceleration * max(distance - clearance, 0))`.
-The path/trailing/recovery request remains an upper bound. The supervisor
-also caps speed to `0.8 * distance / (1.0 + scan_age)` to leave headroom above
-the emergency TTC boundary rather than accelerating straight back into it.
-The existing actuator slew limiter still controls the physical output rate.
+The collision speed cap is now purely linear:
+`v_cap = collision_speed_gain * max(current_front_distance - front_clearance_m, 0)`.
+Defaults are 0.8 s⁻¹ and 0.30 m; scan age is compensated using measured forward
+speed. The path/trailing/recovery target remains an upper bound. There are no
+TTC stop/release thresholds, front-stop latch or rear-path-start stop test.
 
-Only the collision emergency gate uses the explicit time rule:
-`TTC = max(0, front_distance / measured_forward_speed - scan_age)`.
-It triggers strictly below **1.0 s** and releases above **1.2 s**, including
-while still moving. It does not wait for a standstill. Applied speed references
-are not treated as actual motion, and desired clearance is not subtracted from
-the TTC range. At rest/reversing TTC is infinite. These replace the former
-distance-threshold/full-stop-release loop that caused 11 stop entries in the
-first 20 s of bag `022513`.
+Every MAP/PP speed target passes through one final reference smoother, including
+zero goals caused by a missing path or invalid input. Both acceleration and
+deceleration of this reference default to 1.0 m/s²; long scheduler pauses cannot
+skip the ramp. Fresh applied-command feedback prevents winding up a high
+reference while actuation is gated off. This changes the autonomous reference,
+not the physical motor's braking capability.
 
-The continuous FTG braking cap uses the BLUE baseline 0.30 m clearance and
-0.8 m/s² effective deceleration, below the approximately 1.0 m/s² observed in
-`014101`. These do not change physical braking torque. Standalone FTG's node
-and its own parameters are separate; this change borrows its speed curve.
+Input freshness also uses a continuous confidence scale: full speed until half
+its configured age limit, then linearly down to zero confidence at the limit.
+When no trustworthy geometry remains, retain the last valid steering and fade
+the speed reference toward zero. A temporarily missing path never bypasses the
+smoother with an immediate zero command. The local planner rebases localization
+jumps immediately with a 0.5 m/s recovery path, without publishing a stop path
+or entering a timed hold. Explicit initial-pose waiting and unavailable TF skip
+path publication; the controller's input-age ramp handles the gap.
 
-On real cars, absent/stale `/ackermann_cmd_applied` feedback stops the controller.
-Direct-drive gym simulation defaults `require_applied_feedback` to false.
-During braking, fresh usable forward path geometry still updates steering;
-MAP uses measured speed for that lookup. At rest or with invalid/stale inputs,
-the last valid steering is retained. The actuator's steering bounds/rate limits
-still apply. The front distance is the fourth-nearest valid beam within
-±12 degrees. TTC is a forward-range/current-speed estimate, not a prediction
-of the full turning/swept footprint. Invalid inputs can independently stop the
-controller even when the collision TTC gate is not active.
+The front range is the fourth-nearest valid beam within ±12 degrees. This is a
+forward range estimate, not a swept-footprint collision prediction. The recovery
+0.5 m/s cap is not a minimum vehicle speed: collision clearance and valid lower
+path targets can reduce it further, continuously. Manual deadman/teleop gates,
+shutdown handling and the driver's command watchdog remain physical stop
+mechanisms, independent of this autonomous speed law. Standalone FTG is separate.
 
 Build the updated package before launching:
 
 ```bash
 cd ~/ws
-colcon build --packages-select controller --symlink-install
+colcon build --packages-select controller local_planner --symlink-install
 source install/setup.bash
 ```
 
@@ -102,7 +98,7 @@ For a read-only regression against a recorded bag, from the repository root:
 
 ```bash
 PYTHONPATH="$PWD/controller:$PYTHONPATH" python3 controller/scripts/check_recorded_safety.py \
-  bags/control_fault_20261111_014101_150285/rosbag/rosbag_0.db3
+  bags/control_fault_20261111_023931_197022/rosbag/rosbag_0.db3
 ```
 
 The check uses recorded inputs with BLUE L1 parameters and the selected MAP
@@ -253,10 +249,50 @@ However we suggest to use the launch files present in the `stack_master package`
 ## Description
 The Follow-The-Gap (FTG) Controller is a simple reactive controller which uses directly the LiDAR scans and the car's pose to compute and publish the velocity and steering angle of the car. In our race stack, the FTG controller is mainly used for mapping, so that we do not have to drive manually around the track. However, even though never used in practice anymore, there is the possibility to set a sector in the state machine as `FTGONLY` and then the FTG controller managed by `controller_manager.py` is used during these sectors.
 
- ## Parameters
- - `track_width`: Approximate width of the track.
- - `max_speed`: Maximum speed allowed.
- - `safety_radius`: Safety radius to reduce cutting corners.
- - `max_lidar_dist`: Maximum possible scan distance of the LiDAR.
- - `range_offset`: Range of LiDAR points to be considered, only consider `[range_offset,-range_offset]`.
- - `debug`: If set to `True`, the best gap, best point and preprocessed LiDAR scans are published as Markers.
+## Standalone FTG configuration
+
+The current ego/opponent launch scripts run `reactive_node`
+(`controller/follow_the_gap.py`) through `stack_master/launch/ftg_launch.xml`.
+All startup tuning parameters are listed with units and constraints in
+`stack_master/config/follow_the_gap_params.yaml`:
+
+| Group | Parameters |
+| --- | --- |
+| LiDAR and clearance | `bubble_radius`, `max_distance`, `disparity_thresh`, `scan_range_offset`, `preprocess_conv_size` |
+| Gap selection | `minimum_gap_angle`, `gap_weight_power` |
+| Speed measurement | `front_distance_index` (540 by default; -1 uses the forward beam from scan geometry) |
+| Speed curve | `max_speed`, `speed_near_distance`, `speed_far_distance`, `speed_near`, `speed_distance_gain`, `speed_distance_offset` |
+| Braking | `max_deceleration`, `braking_stop_margin`, `max_command_dt` |
+| Steering | `steering_angle_to_servo_gain`, `steering_angle_to_servo_offset`, `servo_min`, `servo_max`, `servo_limit_margin` |
+| ROS and shutdown | `debug`, `publish_queue_depth`, `stop_publish_count`, `stop_publish_interval` |
+
+Restart FTG after editing; these parameters are read-only while running.
+The three existing launch arguments `max_speed`, `max_deceleration`, and
+`minimum_gap_angle` take precedence over YAML. `param_file:=/path/to/file.yaml`
+selects an alternative configuration. Use ROS remappings for topics.
+Real-car steering calibration comes from the selected vehicle's `vesc.yaml`;
+optional calibration overrides in the FTG file are commented to preserve it.
+
+The speed curve uses the processed front range after clipping and obstacle
+bubbles. With the existing `max_distance: 3.5` and `speed_far_distance: 4.0`, the
+far-speed branch cannot be reached. Braking caps the desired speed, and the
+command deceleration limiter controls how quickly a previous command decreases.
+
+## Historical controller-manager FTG configuration
+
+`controller/ftg.py` is a separate historical implementation selected by
+`controller_manager` mode `FTG`. Its tuning file is `controller/config/legacy_ftg.yaml`,
+loaded by `controller_launch.xml` (override with `ftg_param_file`). The file
+exposes filter size, scan geometry, disparity threshold, search-radius formula,
+speed scale/ratios, mapping speed, steering thresholds/limit, marker frame/sizes,
+and publisher queue depth. It preserves historical values; the 30-degree corner
+threshold exceeds the 0.4-rad steering clip, so that speed branch is unreachable
+until the thresholds or clip are changed.
+
+The six original parameters can also be set under `legacy_ftg` in that file:
+`track_width` (m), `max_speed` (m/s), `safety_radius` (beams, integer >= 2),
+`max_lidar_dist` (m), `range_offset` (beams cropped from each end), and `debug`
+(publishes RViz markers). When omitted, they retain their existing source on the
+`state_machine` node. This file has no effect on standalone FTG. The historical
+mode still depends on the controller-manager/state-machine setup; extracting
+its parameters does not enable it as a standalone node.

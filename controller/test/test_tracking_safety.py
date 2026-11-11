@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pytest
 
-from controller.tracking_safety import RecoverySpeedLimiter, front_speed_limit, path_tracking_errors, time_to_collision
+from controller.tracking_safety import RecoverySpeedLimiter, SpeedSmoother, collision_speed_limit, freshness_scale, path_tracking_errors
 from controller.speed_profiles import ftg_speed_target
 from controller.map import MAP_Controller
 from types import SimpleNamespace
@@ -82,37 +82,52 @@ def test_invalid_path_restarts_slow_and_scheduler_pause_cannot_release_cap():
     assert path_tracking_errors([0, 0, 0], [[0, 0], [float('nan'), 0]]) is None
 
 
-def test_ttc_uses_range_and_measured_speed_without_clearance_subtraction():
-    assert time_to_collision(1.0, 1.0) == 1.0
-    assert time_to_collision(1.0, 1.0, .1) == .9
-    assert math.isinf(time_to_collision(1.0, 0.0))
-    assert math.isinf(time_to_collision(1.0, -.5))
-    assert time_to_collision(.05, 1.0, .1) == 0.0
+def test_collision_speed_is_linear_without_ttc_thresholds_or_crawl_floor():
+    assert collision_speed_limit(1.3, 1.0, .0) == pytest.approx(.8)
+    assert collision_speed_limit(1.4, 1.0, .0) == pytest.approx(.88)
+    assert collision_speed_limit(1.3, 1.0, .1) == pytest.approx(.72)
+    assert collision_speed_limit(.4, 2.0, .0) == pytest.approx(.08)
+    assert collision_speed_limit(.3, 2.0, .0) == 0.0
 
 
-@pytest.mark.parametrize('kwargs', [{'deceleration': 0}, {'distance': float('nan')},
-                                   {'ttc_stop': 0}])
-def test_invalid_braking_parameters_rejected(kwargs):
-    values = dict(distance=1, clearance=.3, ttc_stop=1.0, scan_age=.02, deceleration=.8)
+@pytest.mark.parametrize('kwargs', [{'gain': 0}, {'distance': float('nan')}, {'scan_age': -1}])
+def test_invalid_collision_parameters_rejected(kwargs):
+    values=dict(distance=1.0, speed=1.0, scan_age=.02, clearance=.3, gain=.8)
     values.update(kwargs)
     with pytest.raises(ValueError):
-        front_speed_limit(**values)
+        collision_speed_limit(**values)
 
 
-def test_ftg_curve_matches_standalone_existing_law():
-    for distance in [0, .1, .3, .5, 1.19, 1.2, 1.21, 2, 3.99, 4, 8]:
-        set_speed = .96 if distance < 1.2 else .9 * distance + .2 if distance < 4 else 4.0
-        original = min(set_speed, 4.0, math.sqrt(2 * 2.5 * max(distance - .3, 0)))
-        assert ftg_speed_target(distance, 4.0, 2.5, .3) == original
+def test_freshness_is_a_continuous_linear_scale():
+    assert freshness_scale(.2, .5) == 1
+    assert freshness_scale(.25, .5) == 1
+    assert freshness_scale(.375, .5) == .5
+    assert freshness_scale(.5, .5) == 0
+    assert freshness_scale(float('inf'), .5) == 0
 
 
-def test_front_profile_has_headroom_before_ttc_stop_and_no_recovery_floor():
-    caps = [front_speed_limit(d, .3, 1.0, .02, .8) for d in [1.1, 1.3, 1.7]]
-    assert all(.5 < v < 1.4 for v in caps)
-    assert caps == sorted(caps)
-    for d, cap in zip([1.1, 1.3, 1.7], caps):
-        assert time_to_collision(d, cap, .02) >= 1.25
-    assert front_speed_limit(.3, .3, 1.0, .02, .8) == 0.0
+def test_final_smoother_limits_every_jump_including_zero_and_nan_targets():
+    smoother=SpeedSmoother()
+    last=smoother.update(2.2, .025, 1.0)
+    for target in [0.0, 2.2, .1, 2.0, float('nan'), 0.0]:
+        speed=smoother.update(target, .025)
+        assert abs(speed-last) <= .025 + 1e-10
+        last=speed
+    assert last > 0
+
+
+def test_smoother_does_not_wind_up_behind_disabled_actuation():
+    smoother=SpeedSmoother()
+    for _ in range(100):
+        speed=smoother.update(2.2, .025, 0.0)
+    assert speed <= .1
+    assert smoother.update(2.2, .025, .1) <= .125
+
+
+def test_scheduler_pause_does_not_turn_a_zero_target_into_abrupt_stop():
+    smoother=SpeedSmoother()
+    smoother.speed=2.0
+    assert smoother.update(0.0, 10.0) == pytest.approx(1.9)
 
 
 def test_map_braking_lookup_uses_measured_speed_instead_of_path_target():

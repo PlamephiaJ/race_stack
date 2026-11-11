@@ -1,0 +1,47 @@
+# Historical controller_manager mode:=FTG (controller/ftg.py) ONLY.
+# Standalone ftg_launch.xml uses stack_master/config/follow_the_gap_params.yaml.
+# Startup parameters: edit and restart. Core overrides are optional so that
+# existing state_machine parameter values are preserved unless explicitly set.
+/**:
+  ros__parameters:
+    legacy_ftg:
+      # Uncomment to override the six original state_machine parameters locally.
+      # Values below are EXAMPLES, not new defaults.
+      # debug: false
+      # safety_radius: 40       # beams; integer >= 2 (not a radius in metres).
+      # max_lidar_dist: 10.0    # m; > 0.
+      # max_speed: 5.0          # m/s; > 0; reference for speed ratios and radius.
+      # range_offset: 180       # beams cropped from each end; integer >= 0.
+      # track_width: 2.0        # m; > 0.
+
+      # LiDAR / gap geometry.
+      preprocess_conv_size: 3  # beams in moving-average filter; integer >= 1.
+      lidar_fov_rad: 4.71238898038469 # rad; full scan field of view (270 deg).
+      gap_index_offset: 180    # beams; legacy Cartesian conversion offset.
+      disparity_thresh: 0.5    # m; range jump triggering safety-border extension.
+      radius_max: 5.0          # m; upper bound of gap search radius.
+      radius_track_width_ratio: 0.5 # base radius = track_width * this ratio.
+      radius_velocity_gain: 2.0 # m; radius += gain * velocity / max_speed.
+
+      # Speed = max_speed * speed_scale * selected ratio (non-mapping mode).
+      speed_scale: 0.6
+      corners_speed_ratio: 0.3
+      mild_corners_speed_ratio: 0.45
+      straights_speed_ratio: 0.8
+      ultrastraights_speed_ratio: 1.0
+      mapping_speed: 1.5        # m/s; fixed speed when mapping=true.
+
+      # Ordered absolute steering thresholds, in radians: 3 / 10 / 30 deg.
+      ultrastraights_angle: 0.05235987755982988
+      straights_steering_angle: 0.17453292519943295
+      mild_curve_angle: 0.5235987755982988
+      max_steering_angle: 0.4   # rad; symmetric steering clip.
+      # Original 30-deg threshold exceeds the 0.4-rad clip, so corners_speed_ratio
+      # is unreachable with these historical defaults. Retained for compatibility.
+
+      # RViz markers (only published when debug is true).
+      debug_frame_id: car_state/laser
+      scan_marker_size: 0.05    # m.
+      gap_marker_size: 0.05     # m.
+      best_point_marker_size: 0.2 # m.
+      publish_queue_depth: 10

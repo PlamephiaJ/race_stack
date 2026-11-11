@@ -12,14 +12,8 @@
     # Smooth the interpolated cap in both directions; wrong direction caps at 0.5.
     recovery_release_accel_mps2: 1.0
 
+    # Pure linear collision-distance speed; no TTC/stop/release thresholds.
     front_clearance_m: 0.30
-    # BLUE 014101: measured end-to-end wheel deceleration ~1.0 m/s^2.
-    # 0.8 includes margin; it is NOT the actuator's 2.5 m/s^2 command slew.
-    # Other vehicles and changes to actuation limits need fresh measurements.
-    front_decel_mps2: 0.8
-    # Emergency stop uses current measured speed and scan-age-corrected TTC.
-    # Release on TTC recovery, not after forcing the car to a standstill.
-    front_ttc_stop_sec: 1.0
-    front_ttc_release_sec: 1.2
-    # Continuous FTG-style speed cap targets TTC >= 1/0.8 = 1.25 seconds.
-    front_speed_margin: 0.8
+    collision_speed_gain: 0.8  # v = 0.8 * max(current_distance - 0.30, 0)
+    speed_accel_mps2: 1.0
+    speed_decel_mps2: 1.0

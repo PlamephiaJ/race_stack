@@ -49,12 +49,11 @@ def planner_with_transforms(map_odom_stamp, odom_base_stamp):
         max_tf_lag_sec=0.3, map_to_odom_matrix=None, current_position=None,
         max_tf_jump_m=1.0, max_tf_jump_rad=math.radians(25.0),
         tf_jump_arm_sec=3.0, first_map_odom_seen_at=None,
-        localization_recovery_hold_until=0.0,
         localization_recovery_slow_until=0.0,
         initialpose_target=None, initialpose_received_ns=None,
         initialpose_received_at=None,
-        tf_jump_hold_sec=0.3, tf_jump_slow_sec=2.0,
-        tf_jump_recovery_speed_mps=0.3,
+        tf_jump_slow_sec=2.0,
+        tf_jump_recovery_speed_mps=0.5,
         last_map_odom_matrix=None, lookups=lookups, warnings=warnings)
 
 
@@ -77,19 +76,14 @@ def test_stale_map_correction_skips_path_update():
     assert 'skipping stale path' in planner.warnings[0]
 
 
-def test_large_localization_jump_holds_then_rebases_after_startup():
+def test_large_localization_jump_rebases_without_a_forced_stop_hold():
     planner = planner_with_transforms(10.0, 10.1)
     assert LocalPlanner.update_pose_from_tf(planner)
     planner.first_map_odom_seen_at = time.monotonic() - 4.0
-
-    planner.lookups[('map', 'odom')] = transform(
-        'map', 'odom', 1.0, 2.0, math.pi, 10.1)
-    assert not LocalPlanner.update_pose_from_tf(planner)
-    assert 'correction jumped' in planner.warnings[-1]
-    assert planner.localization_recovery_hold_until > time.monotonic()
-    assert planner.map_to_odom_matrix is None
-    planner.localization_recovery_hold_until = time.monotonic() - 1.0
+    planner.lookups[('map', 'odom')] = transform('map', 'odom', 1.0, 2.0, math.pi, 10.1)
     assert LocalPlanner.update_pose_from_tf(planner)
+    assert 'correction jumped' in planner.warnings[-1]
+    assert planner.map_to_odom_matrix is not None
     assert planner.localization_recovery_slow_until > time.monotonic()
 
 
@@ -100,7 +94,6 @@ def test_initial_localization_jump_does_not_enter_recovery():
     planner.lookups[('map', 'odom')] = transform(
         'map', 'odom', 1.0, 2.0, math.pi, 10.1)
     assert LocalPlanner.update_pose_from_tf(planner)
-    assert planner.localization_recovery_hold_until == 0.0
 
 
 def test_explicit_initialpose_waits_for_matching_new_tf_and_resets_baseline():
@@ -127,26 +120,16 @@ def test_explicit_initialpose_waits_for_matching_new_tf_and_resets_baseline():
     assert LocalPlanner.update_pose_from_tf(planner)
     assert planner.initialpose_target is None
     assert planner.localization_recovery_slow_until == 0.0
-    assert planner.localization_recovery_hold_until == 0.0
     assert np.allclose(planner.current_position, [-2.0, -2.0, math.pi])
 
 
-def test_explicit_initialpose_wait_publishes_empty_path():
+def test_explicit_initialpose_wait_does_not_publish_a_forced_stop_path():
     published = []
-    planner = SimpleNamespace(
-        localization_recovery_hold_until=0.0,
-        initialpose_target=(0.0, 0.0, 0.0),
-        update_pose_from_tf=lambda: False,
-        get_clock=lambda: SimpleNamespace(
-            now=lambda: SimpleNamespace(to_msg=lambda: Time(sec=12))),
-        loc_wpnt_pub=SimpleNamespace(publish=published.append),
-    )
-    planner.publish_stop_path = lambda: LocalPlanner.publish_stop_path(planner)
-
+    planner = SimpleNamespace(initialpose_target=(0.0, 0.0, 0.0),
+                              update_pose_from_tf=lambda: False,
+                              loc_wpnt_pub=SimpleNamespace(publish=published.append))
     LocalPlanner.loop(planner)
-
-    assert len(published) == 1
-    assert not published[0].wpnts
+    assert not published
 
 
 def test_invalid_initialpose_does_not_discard_current_path():
@@ -163,39 +146,24 @@ def test_invalid_initialpose_does_not_discard_current_path():
     assert planner.map_to_odom_matrix is previous_path_transform
 
 
-def test_repeated_jump_extends_slow_recovery_without_another_hold():
+def test_repeated_jump_extends_recovery_without_holding_paths():
     planner = planner_with_transforms(10.0, 10.1)
     assert LocalPlanner.update_pose_from_tf(planner)
     planner.first_map_odom_seen_at = time.monotonic() - 4.0
-    planner.lookups[('map', 'odom')] = transform(
-        'map', 'odom', 1.0, 2.0, math.pi, 10.1)
-    assert not LocalPlanner.update_pose_from_tf(planner)
-
-    planner.localization_recovery_hold_until = time.monotonic() - 1.0
-    previous_slow_until = planner.localization_recovery_slow_until
-    planner.lookups[('map', 'odom')] = transform(
-        'map', 'odom', 1.0, 2.0, 0.0, 10.1)
+    planner.lookups[('map', 'odom')] = transform('map', 'odom', 1.0, 2.0, math.pi, 10.1)
     assert LocalPlanner.update_pose_from_tf(planner)
-    assert planner.localization_recovery_hold_until < time.monotonic()
-    assert planner.localization_recovery_slow_until >= previous_slow_until
+    previous = planner.localization_recovery_slow_until
+    planner.lookups[('map', 'odom')] = transform('map', 'odom', 1.0, 2.0, 0.0, 10.1)
+    assert LocalPlanner.update_pose_from_tf(planner)
+    assert planner.localization_recovery_slow_until >= previous
 
 
-def test_recovery_hold_publishes_empty_path_temporarily():
+def test_missing_tf_does_not_publish_an_empty_path_command():
     published = []
-    planner = SimpleNamespace(
-        localization_recovery_hold_until=time.monotonic() + 1.0,
-        initialpose_target=None,
-        get_clock=lambda: SimpleNamespace(
-            now=lambda: SimpleNamespace(to_msg=lambda: Time(sec=12))),
-        loc_wpnt_pub=SimpleNamespace(publish=published.append),
-        publish_stop_path=lambda: None)
-    planner.publish_stop_path = lambda: LocalPlanner.publish_stop_path(planner)
-
+    planner = SimpleNamespace(update_pose_from_tf=lambda: False,
+                              loc_wpnt_pub=SimpleNamespace(publish=published.append))
     LocalPlanner.loop(planner)
-
-    assert len(published) == 1
-    assert published[0].header.frame_id == 'odom'
-    assert not published[0].wpnts
+    assert not published
 
 
 def test_recovery_caps_published_path_speed_without_changing_source_waypoint():
@@ -204,7 +172,7 @@ def test_recovery_caps_published_path_speed_without_changing_source_waypoint():
     planner = SimpleNamespace(
         map_to_odom_matrix=np.eye(4),
         localization_recovery_slow_until=time.monotonic() + 1.0,
-        tf_jump_recovery_speed_mps=0.3,
+        tf_jump_recovery_speed_mps=0.5,
         max_speed=3.0,
         get_clock=lambda: SimpleNamespace(
             now=lambda: SimpleNamespace(to_msg=lambda: Time(sec=12))),
@@ -214,5 +182,5 @@ def test_recovery_caps_published_path_speed_without_changing_source_waypoint():
 
     LocalPlanner._pub_local_wpnts(planner, WpntArray(wpnts=[source]))
 
-    assert published[0].wpnts[0].vx_mps == 0.3
+    assert published[0].wpnts[0].vx_mps == 0.5
     assert source.vx_mps == 2.62

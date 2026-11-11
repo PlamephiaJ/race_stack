@@ -1,6 +1,48 @@
-# Wildcard also applies to /opp_racecar/reactive_follow_gap_node.
+# Standalone controller.follow_the_gap (reactive_node), ego and opponent.
+# Startup parameters: edit this file and restart FTG. Topics use ROS remappings.
+# Existing launch overrides: max_speed, max_deceleration, minimum_gap_angle.
 /**:
   ros__parameters:
-    max_speed: 4.0               # Maximum commanded speed (m/s).
-    max_deceleration: 2.5        # Maximum allowed deceleration (m/s^2).
-    minimum_gap_angle: 0.12     # Minimum navigable gap width (rad).
+    # LiDAR processing / obstacle clearance.
+    bubble_radius: 0.25         # m; clearance around disparities and closest point; >= 0.
+    max_distance: 3.5           # m; clip processed ranges at this distance; > 0.
+    # With the historical 3.5 m clip, the 4.0 m far-speed branch is unreachable.
+    # Raise max_distance or lower speed_far_distance if that branch is desired.
+    disparity_thresh: 0.15      # m; adjacent-range jump that creates a bubble; >= 0.
+    scan_range_offset: 180     # beams discarded at EACH end; 0 uses the full scan.
+    preprocess_conv_size: 3    # beams in the moving-average filter; integer >= 1.
+
+    # Gap selection: deepest gap, ties resolved toward the scan centre.
+    minimum_gap_angle: 0.12    # rad; prefer gaps at least this wide; >= 0.
+    gap_weight_power: 2.0      # centre weights = range ** power; 0 gives uniform weights.
+    front_distance_index: 540  # beam used for speed; -1 selects 0 rad from LaserScan geometry.
+
+    # Distance-based speed target, subsequently capped by max_speed and braking envelope:
+    # d < speed_near_distance: speed_near
+    # d < speed_far_distance: speed_distance_gain * d + speed_distance_offset
+    # otherwise: max_speed
+    # d is the PROCESSED front range (after clipping and obstacle bubbles).
+    max_speed: 4.0              # m/s; upper bound of desired speed; direct-node fallback is 1.0.
+    speed_near_distance: 1.2   # m; >= 0.
+    speed_far_distance: 4.0    # m; > speed_near_distance.
+    speed_near: 0.96           # m/s; >= 0.
+    speed_distance_gain: 0.9   # (m/s)/m; >= 0.
+    speed_distance_offset: 0.2 # m/s; >= 0.
+    max_deceleration: 2.5      # m/s^2; braking envelope and command deceleration; > 0.
+    braking_stop_margin: 0.30  # m; clearance subtracted from front range; >= 0.
+    max_command_dt: 0.10       # s; largest elapsed time used by deceleration limiter; > 0.
+
+    # Steering: real-car launch first loads config/<racecar_version>/vesc.yaml.
+    # Leave these calibration overrides COMMENTED to preserve that vehicle's values.
+    # Uncomment to override; shown values are the direct-node / SIM fallbacks.
+    # steering_angle_to_servo_gain: -1.2135
+    # steering_angle_to_servo_offset: 0.5304
+    # servo_min: 0.15
+    # servo_max: 0.85
+    servo_limit_margin: 0.001  # servo units; inset at both limits; >= 0.
+
+    # Shutdown / ROS publishers.
+    stop_publish_count: 3      # zero-speed messages on shutdown; integer >= 1.
+    stop_publish_interval: 0.05 # s between shutdown publications; >= 0.
+    publish_queue_depth: 10    # publisher history depth; integer >= 1.
+    debug: true               # DEBUG logging; false selects INFO (no target markers emitted).

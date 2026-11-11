@@ -21,7 +21,7 @@ import yaml
 
 from controller.controller_manager import Controller
 from controller.map import MAP_Controller
-from controller.tracking_safety import RecoverySpeedLimiter
+from controller.tracking_safety import RecoverySpeedLimiter, SpeedSmoother
 
 
 def main():
@@ -54,24 +54,26 @@ def main():
         last_odom_stamp_ns=None, last_frenet_stamp_ns=None, last_waypoints_stamp_ns=None,
         last_scan_time=None, last_scan_stamp_ns=None, scan=None,
         applied_speed=None, last_applied_time=None, last_applied_stamp_ns=None,
-        max_input_age_sec=.5, max_odom_age_sec=.3, max_path_start_rear_m=.75,
+        max_input_age_sec=.5, max_odom_age_sec=.3,
         require_applied_feedback=True, front_guard_enabled=True,
-        front_stop_latched=False, front_speed_cap=0.0, last_control_time=0.0,
+        front_speed_cap=0.0, last_control_time=0.0, prioritize_dyn=params['prioritize_dyn'],
         recovery_limiter=RecoverySpeedLimiter(),
+        speed_smoother=SpeedSmoother(),
         get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(
             nanoseconds=clock.ns, to_msg=lambda: Time(sec=clock.ns // 10**9, nanosec=clock.ns % 10**9))),
         get_logger=lambda: SimpleNamespace(warning=noop, info=noop),
         drive_pub=SimpleNamespace(publish=published.append))
     safety = yaml.safe_load((root / 'controller/config/tracking_safety.yaml').read_text())['/**']['ros__parameters']
-    for name in ('front_clearance_m', 'front_decel_mps2', 'front_ttc_stop_sec', 'front_ttc_release_sec', 'front_speed_margin'):
+    for name in ('front_clearance_m', 'collision_speed_gain'):
         setattr(stub, name, safety[name])
-    stub.inputs_ready = lambda now, **kw: Controller.inputs_ready(stub, now, **kw)
-    stub.path_start_too_far_behind = lambda: Controller.path_start_too_far_behind(stub)
-    stub.front_obstacle_stop = lambda now: Controller.front_obstacle_stop(stub, now)
+    stub.speed_smoother = SpeedSmoother(safety['speed_accel_mps2'], safety['speed_decel_mps2'])
+    stub.inputs_ready = lambda now: Controller.inputs_ready(stub, now)
+    stub.input_speed_scale = lambda now: Controller.input_speed_scale(stub, now)
+    stub.front_collision_speed = lambda now: Controller.front_collision_speed(stub, now)
 
     def cycle(braking=False):
         result = model.main_loop(stub.state, stub.position_in_map,
-                                 stub.waypoint_array_in_map, stub.speed_now, None,
+                                 stub.waypoint_array_in_map, stub.speed_now, stub.opponent,
                                  stub.position_in_map_frenet, stub.acc_now,
                                  stub.track_length, steering_speed=stub.speed_now if braking else None)
         return result[0], result[3]
@@ -82,20 +84,21 @@ def main():
                  '/local_waypoints': Controller.local_waypoint_cb,
                  '/scan': Controller.scan_cb,
                  '/ackermann_cmd_applied': Controller.applied_command_cb,
-                 '/state': Controller.state_cb}
+                 '/state': Controller.state_cb,
+                 '/perception/obstacles': Controller.obstacle_cb}
     rows = []
-    navigation_time = 0.0
+    navigation_time = None
     with patch('controller.controller_manager.time.monotonic', lambda: clock.seconds):
         for topic, ns, data in c.execute('select topic_id,timestamp,data from messages order by timestamp,id'):
             name, cls = types[topic]
-            if name not in callbacks and name not in ('/drive', '/global_waypoints_scaled', '/rosout'):
+            if name not in callbacks and name not in ('/drive', '/global_waypoints_scaled', '/joy'):
                 continue
             clock.ns, clock.seconds = ns, (ns - start) * 1e-9
             m = deserialize_message(data, cls)
             if name in callbacks:
                 callbacks[name](stub, m)
-            elif name == '/rosout':
-                if not navigation_time and m.name == 'actuation_manager' and m.msg == 'Actuation source: navigation':
+            elif name == '/joy':
+                if navigation_time is None and len(m.buttons) > 5 and m.buttons[5]:
                     navigation_time = clock.seconds
             elif name == '/global_waypoints_scaled':
                 stub.track_length = m.wpnts[-1].s_m
@@ -106,22 +109,22 @@ def main():
                                  new_speed=command.speed,
                                  recorded_steer_deg=math.degrees(m.drive.steering_angle),
                                  new_steer_deg=math.degrees(command.steering_angle),
-                                 front_stop=stub.front_stop_latched,
                                  front_speed_cap=stub.front_speed_cap,
-                                 front_ttc=stub.front_ttc if hasattr(stub, 'front_ttc') else float('inf'),
+                                 input_scale=stub.input_speed_scale(clock.seconds),
                                  recovery=stub.recovery_limiter.recovering))
     with args.output.open('w') as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
-    first_guard = next((r for r in rows if r['front_stop']), None)
+    navigation_time = navigation_time or 0.0
     at_enable = next(r for r in rows if r['t'] >= navigation_time)
     print('Decision at navigation enable:', at_enable)
-    print('First new front guard on recorded inputs:', first_guard)
     for key in ('recorded_speed', 'new_speed'):
         stops = sum(a[key] > 0 and b[key] == 0 for a,b in zip(rows,rows[1:])
-                    if navigation_time < b['t'] < 20.0)
-        print('Stop entries before 20s:', key, stops)
+                    if navigation_time < b['t'] < 53.419)
+        jumps = [abs(b[key]-a[key]) for a,b in zip(rows,rows[1:]) if navigation_time < b['t'] < 53.419]
+        rates = [abs(b[key]-a[key])/(b['t']-a['t']) for a,b in zip(rows,rows[1:]) if navigation_time < b['t'] < 53.419]
+        print('Active-window stop entries, largest step and max reference slew:', key, stops, max(jumps), max(rates))
     print('CSV:', args.output)
     print('Open loop; recorded actuation and trajectory were not replaced. MAP table:', args.lookup_table)
 

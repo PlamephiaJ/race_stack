@@ -1,19 +1,36 @@
 #!/usr/bin/env python3
 import math
-import rclpy
 import numpy as np
 from visualization_msgs.msg import Marker, MarkerArray
 from rclpy.node import Node
 
 
 class FTG_Controller(Node):
-    #Lidar processing params
-    PREPROCESS_CONV_SIZE = 3
-    
-    #Steering params
-    STRAIGHTS_STEERING_ANGLE = np.pi / 18  # 10 degrees
-    MILD_CURVE_ANGLE = np.pi / 6  # 30 degrees
-    ULTRASTRAIGHTS_ANGLE = np.pi / 60  # 3 deg
+    # Historical controller-manager FTG; standalone uses follow_the_gap.py.
+    TUNING_DEFAULTS = {
+        'preprocess_conv_size': 3,
+        'straights_steering_angle': math.pi / 18,
+        'mild_curve_angle': math.pi / 6,
+        'ultrastraights_angle': math.pi / 60,
+        'speed_scale': 0.6,
+        'corners_speed_ratio': 0.3,
+        'mild_corners_speed_ratio': 0.45,
+        'straights_speed_ratio': 0.8,
+        'ultrastraights_speed_ratio': 1.0,
+        'mapping_speed': 1.5,
+        'max_steering_angle': 0.4,
+        'lidar_fov_rad': 1.5 * math.pi,
+        'gap_index_offset': 180,
+        'radius_max': 5.0,
+        'radius_track_width_ratio': 0.5,
+        'radius_velocity_gain': 2.0,
+        'disparity_thresh': 0.5,
+        'debug_frame_id': 'car_state/laser',
+        'scan_marker_size': 0.05,
+        'gap_marker_size': 0.05,
+        'best_point_marker_size': 0.2,
+        'publish_queue_depth': 10,
+    }
 
     def __init__(self,
                  mapping,
@@ -22,7 +39,8 @@ class FTG_Controller(Node):
                  max_lidar_dist,
                  max_speed,
                  range_offset,
-                 track_width) -> None:
+                 track_width,
+                 tuning=None) -> None:
         super().__init__('controller_manager')
         """
         Initialize the FTG controller.
@@ -38,22 +56,53 @@ class FTG_Controller(Node):
         self.radians_per_elem = None # used when calculating the angles of the LiDAR data
         self.range_offset = range_offset
         self.track_width = track_width
-        
-        
-        # Speed params
-        scale = 0.6  # .575 is  max
-        self.CORNERS_SPEED = 0.3 * self.MAX_SPEED * scale
-        self.MILD_CORNERS_SPEED = 0.45 * self.MAX_SPEED * scale
-        self.STRAIGHTS_SPEED = 0.8 * self.MAX_SPEED * scale
-        self.ULTRASTRAIGHTS_SPEED = self.MAX_SPEED * scale
+        values = dict(self.TUNING_DEFAULTS)
+        if tuning:
+            unknown = set(tuning) - values.keys()
+            if unknown:
+                raise ValueError(f'Unknown legacy FTG tuning parameters: {sorted(unknown)}')
+            values.update(tuning)
+        for name, value in values.items():
+            setattr(self, name, value)
+        self._validate_parameters()
+
+        self.PREPROCESS_CONV_SIZE = self.preprocess_conv_size
+        self.STRAIGHTS_STEERING_ANGLE = self.straights_steering_angle
+        self.MILD_CURVE_ANGLE = self.mild_curve_angle
+        self.ULTRASTRAIGHTS_ANGLE = self.ultrastraights_angle
+        self.CORNERS_SPEED = self.corners_speed_ratio * self.MAX_SPEED * self.speed_scale
+        self.MILD_CORNERS_SPEED = self.mild_corners_speed_ratio * self.MAX_SPEED * self.speed_scale
+        self.STRAIGHTS_SPEED = self.straights_speed_ratio * self.MAX_SPEED * self.speed_scale
+        self.ULTRASTRAIGHTS_SPEED = self.ultrastraights_speed_ratio * self.MAX_SPEED * self.speed_scale
         
         
         self.velocity = 0
         self.scan = None
 
-        self.best_pnt = self.create_publisher(Marker, '/best_points/marker', 10)
-        self.scan_pub = self.create_publisher(MarkerArray, '/scan_proc/markers', 10)
-        self.best_gap = self.create_publisher(MarkerArray, '/best_gap/markers', 10)
+        self.best_pnt = self.create_publisher(Marker, '/best_points/marker', self.publish_queue_depth)
+        self.scan_pub = self.create_publisher(MarkerArray, '/scan_proc/markers', self.publish_queue_depth)
+        self.best_gap = self.create_publisher(MarkerArray, '/best_gap/markers', self.publish_queue_depth)
+
+    def _validate_parameters(self):
+        for name in self.TUNING_DEFAULTS:
+            if name == 'debug_frame_id':
+                if not isinstance(self.debug_frame_id, str) or not self.debug_frame_id:
+                    raise ValueError('legacy_ftg.debug_frame_id must be a non-empty string')
+                continue
+            value = getattr(self, name)
+            if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                raise ValueError(f'legacy_ftg.{name} must be finite and non-negative')
+        for name, minimum in (('preprocess_conv_size', 1), ('gap_index_offset', 0),
+                              ('publish_queue_depth', 1), ('range_offset', 0),
+                              ('SAFETY_RADIUS', 2)):
+            if type(getattr(self, name)) is not int or getattr(self, name) < minimum:
+                raise ValueError(f'Legacy FTG {name} must be an integer >= {minimum}')
+        for name in ('MAX_SPEED', 'MAX_LIDAR_DIST', 'track_width', 'lidar_fov_rad',
+                     'radius_max', 'max_steering_angle'):
+            if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
+                raise ValueError(f'Legacy FTG {name} must be finite and positive')
+        if not self.ultrastraights_angle <= self.straights_steering_angle <= self.mild_curve_angle:
+            raise ValueError('Legacy FTG steering thresholds must be ordered')
 
     def _preprocess_lidar(self, ranges) -> np.ndarray:
         """ 
@@ -69,11 +118,13 @@ class FTG_Controller(Node):
         Returns:
             numpy.ndarray: The preprocessed LiDAR scan array.
         """
-        self.radians_per_elem = (1.5 * np.pi) / len(ranges)
+        self.radians_per_elem = self.lidar_fov_rad / len(ranges)
         # we won't use the LiDAR data from directly behind us
         # full angle is -135 135
         # every point in the array is
-        proc_ranges = np.array(ranges[self.range_offset:-self.range_offset])
+        proc_ranges = np.array(ranges[self.range_offset:len(ranges) - self.range_offset])
+        if len(proc_ranges) < self.PREPROCESS_CONV_SIZE + 2:
+            raise ValueError('Scan is too short for legacy FTG crop / filter window')
         # sets each value to the mean over a given window to smoothen the signal
         proc_ranges = np.convolve(proc_ranges, np.ones(self.PREPROCESS_CONV_SIZE)/self.PREPROCESS_CONV_SIZE, 'valid') 
         # clip the ranges between 0 and your maximum lidar distance
@@ -95,7 +146,7 @@ class FTG_Controller(Node):
         
         """
         steering_angle = math.atan2(point_y, point_x)
-        return np.clip(steering_angle, -0.4, 0.4)
+        return np.clip(steering_angle, -self.max_steering_angle, self.max_steering_angle)
 
     def _get_best_range_point(self, proc_ranges) -> tuple:
         """ 
@@ -112,8 +163,8 @@ class FTG_Controller(Node):
         
         #Find the largest gap
         gap_left, gap_right = self._find_largest_gap(ranges=proc_ranges, radius=radius)
-        gap_left += self.range_offset - 180
-        gap_right += self.range_offset - 180
+        gap_left += self.range_offset - self.gap_index_offset
+        gap_right += self.range_offset - self.gap_index_offset
         gap_middle = int((gap_right + gap_left) / 2)
         #Calculate cartesian point of the best point position from the lidar measurements in laser frame
         best_y = np.cos(gap_middle * self.radians_per_elem) * radius
@@ -127,12 +178,12 @@ class FTG_Controller(Node):
             gap_markers = MarkerArray()
             for i in range(gap_left, gap_right):
                 mrk = Marker()
-                mrk.header.frame_id = 'car_state/laser'
+                mrk.header.frame_id = self.debug_frame_id
                 mrk.header.stamp = self.get_clock().now().to_msg()
                 mrk.type = mrk.SPHERE
-                mrk.scale.x = 0.05
-                mrk.scale.y = 0.05
-                mrk.scale.z = 0.05
+                mrk.scale.x = self.gap_marker_size
+                mrk.scale.y = self.gap_marker_size
+                mrk.scale.z = self.gap_marker_size
                 mrk.color.a = 1.0
                 mrk.color.r = 1.0
                 mrk.color.g = 1.0
@@ -146,12 +197,12 @@ class FTG_Controller(Node):
 
             # visualize best point aka middle of the gap
             best_mrk = Marker()
-            best_mrk.header.frame_id = 'car_state/laser'
+            best_mrk.header.frame_id = self.debug_frame_id
             best_mrk.header.stamp = self.get_clock().now().to_msg()
             best_mrk.type = best_mrk.SPHERE
-            best_mrk.scale.x = 0.2
-            best_mrk.scale.y = 0.2
-            best_mrk.scale.z = 0.2
+            best_mrk.scale.x = self.best_point_marker_size
+            best_mrk.scale.y = self.best_point_marker_size
+            best_mrk.scale.z = self.best_point_marker_size
             best_mrk.color.a = 1.0
             best_mrk.color.b = 1.0
             best_mrk.color.g = 1.0
@@ -183,12 +234,12 @@ class FTG_Controller(Node):
             scan_markers = MarkerArray()
             for i, scan in enumerate(proc_ranges):
                 mrk = Marker()
-                mrk.header.frame_id = 'car_state/laser'
+                mrk.header.frame_id = self.debug_frame_id
                 mrk.header.stamp = self.get_clock().now().to_msg()
                 mrk.type = mrk.SPHERE
-                mrk.scale.x = 0.05
-                mrk.scale.y = 0.05
-                mrk.scale.z = 0.05
+                mrk.scale.x = self.scan_marker_size
+                mrk.scale.y = self.scan_marker_size
+                mrk.scale.z = self.scan_marker_size
                 mrk.color.a = 1.0
                 mrk.color.r = 1.0
                 mrk.color.b = 1.0
@@ -207,7 +258,7 @@ class FTG_Controller(Node):
         steering_angle = self._get_steer_angle(point_x=best_x, point_y=best_y)
 
         if self.mapping:
-            speed = 1.5
+            speed = self.mapping_speed
         else:
             if abs(steering_angle) > self.MILD_CURVE_ANGLE:
                 speed = self.CORNERS_SPEED
@@ -263,7 +314,8 @@ class FTG_Controller(Node):
             float: The calculated radius.
         """
         # Empirically determined that this radius choosing makes sense
-        return min(5., self.track_width / 2 + 2 * (self.velocity / self.MAX_SPEED))
+        return min(self.radius_max, self.track_width * self.radius_track_width_ratio
+                   + self.radius_velocity_gain * (self.velocity / self.MAX_SPEED))
 
     def set_vel(self, velocity) -> None:
         """
@@ -288,7 +340,7 @@ class FTG_Controller(Node):
         ranges_len = len(ranges)
         i = 0
         while i < ranges_len - 1:
-            if ranges[i + 1] - ranges[i] > 0.5:
+            if ranges[i + 1] - ranges[i] > self.disparity_thresh:
                 for j in range(self.SAFETY_RADIUS):
                     if i + j < ranges_len:
                         filtered[i + j] = ranges[i]
@@ -297,7 +349,7 @@ class FTG_Controller(Node):
         # in other direction
         i = ranges_len - 1
         while i > 0:
-            if ranges[i - 1] - ranges[i] > 0.5:
+            if ranges[i - 1] - ranges[i] > self.disparity_thresh:
                 for j in range(self.SAFETY_RADIUS):
                     if i - j >= 0:
                         filtered[i - j] = ranges[i]
@@ -312,7 +364,7 @@ class FTG_Controller(Node):
         del_mrk_array = MarkerArray()
         for i in range(1):
             del_mrk = Marker()
-            del_mrk.header.frame_id = 'car_state/laser'
+            del_mrk.header.frame_id = self.debug_frame_id
             del_mrk.header.stamp = self.get_clock().now().to_msg()
             del_mrk.action = del_mrk.DELETEALL
             del_mrk.id = i

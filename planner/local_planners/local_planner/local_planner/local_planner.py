@@ -63,7 +63,6 @@ class LocalPlanner(Node):
         self.map_to_odom_matrix = None
         self.last_map_odom_matrix = None
         self.first_map_odom_seen_at = None
-        self.localization_recovery_hold_until = 0.0
         self.localization_recovery_slow_until = 0.0
         self.initialpose_target = None
         self.initialpose_received_ns = None
@@ -76,24 +75,20 @@ class LocalPlanner(Node):
             self.declare_parameter("max_tf_jump_rad", math.radians(25.0))
         if not self.has_parameter("tf_jump_arm_sec"):
             self.declare_parameter("tf_jump_arm_sec", 1.0)
-        if not self.has_parameter("tf_jump_hold_sec"):
-            self.declare_parameter("tf_jump_hold_sec", 0.3)
         if not self.has_parameter("tf_jump_slow_sec"):
             self.declare_parameter("tf_jump_slow_sec", 2.0)
         if not self.has_parameter("tf_jump_recovery_speed_mps"):
-            self.declare_parameter("tf_jump_recovery_speed_mps", 0.3)
+            self.declare_parameter("tf_jump_recovery_speed_mps", 0.5)
         self.max_tf_lag_sec = float(self.get_parameter("max_tf_lag_sec").value)
         self.max_tf_jump_m = float(self.get_parameter("max_tf_jump_m").value)
         self.max_tf_jump_rad = float(self.get_parameter("max_tf_jump_rad").value)
         self.tf_jump_arm_sec = float(self.get_parameter("tf_jump_arm_sec").value)
-        self.tf_jump_hold_sec = float(self.get_parameter("tf_jump_hold_sec").value)
         self.tf_jump_slow_sec = float(self.get_parameter("tf_jump_slow_sec").value)
         self.tf_jump_recovery_speed_mps = float(
             self.get_parameter("tf_jump_recovery_speed_mps").value)
         if (self.max_tf_lag_sec <= 0.0 or self.max_tf_jump_m <= 0.0
                 or self.max_tf_jump_rad <= 0.0 or self.tf_jump_arm_sec < 0.0
-                or self.tf_jump_hold_sec < 0.0
-                or self.tf_jump_slow_sec < self.tf_jump_hold_sec
+                or self.tf_jump_slow_sec < 0.0
                 or self.tf_jump_recovery_speed_mps <= 0.0):
             raise ValueError("Invalid TF freshness or jump limit")
         self.glb_wpnts = None
@@ -480,7 +475,6 @@ class LocalPlanner(Node):
         self.initialpose_received_at = time.monotonic()
         self.map_to_odom_matrix = None
         self.current_position = None
-        self.localization_recovery_hold_until = 0.0
         self.localization_recovery_slow_until = 0.0
         self.get_logger().info(
             '[Local Planner] Explicit initial pose received; waiting for PF correction')
@@ -552,23 +546,16 @@ class LocalPlanner(Node):
             if (now - self.first_map_odom_seen_at >= self.tf_jump_arm_sec
                     and (jump_m > self.max_tf_jump_m
                          or jump_rad > self.max_tf_jump_rad)):
-                # After the first jump, use the new correction as a baseline.
-                # Subsequent jumps during recovery extend the slow period
-                # without repeatedly stopping the car.
-                already_recovering = now < self.localization_recovery_slow_until
+                # Rebase immediately and keep publishing a low-speed path.
+                # The controller interpolates the resulting speed reference.
                 self.last_map_odom_matrix = map_odom_matrix
                 self.localization_recovery_slow_until = now + self.tf_jump_slow_sec
-                if not already_recovering:
-                    self.localization_recovery_hold_until = now + self.tf_jump_hold_sec
-                    self.map_to_odom_matrix = None
                 self.get_logger().warning(
                     f"[Local Planner] localization correction jumped "
                     f"{jump_m:.2f}m / {math.degrees(jump_rad):.1f}deg; "
                     f"limiting path speed to "
                     f"{self.tf_jump_recovery_speed_mps:.1f}m/s",
                     throttle_duration_sec=1.0)
-                if not already_recovering:
-                    return False
         self.last_map_odom_matrix = map_odom_matrix
         x, y, _ = translation_from_matrix(map_base_matrix)
         q = quaternion_from_matrix(map_base_matrix)
@@ -649,24 +636,12 @@ class LocalPlanner(Node):
     def FTGOnly(self):
         return []
 
-    def publish_stop_path(self):
-        stop_path = WpntArray()
-        stop_path.header.stamp = self.get_clock().now().to_msg()
-        stop_path.header.frame_id = "odom"
-        self.loc_wpnt_pub.publish(stop_path)
-
     def loop(self):
         """
         Main loop of the local planner.
         """
-        if time.monotonic() < self.localization_recovery_hold_until:
-            self.publish_stop_path()
-            return
         # update position, skip this iteration if TF is not available yet
         if not self.update_pose_from_tf():
-            if (self.initialpose_target is not None
-                    or time.monotonic() < self.localization_recovery_hold_until):
-                self.publish_stop_path()
             return
         self.update_frenet_from_pose()
 

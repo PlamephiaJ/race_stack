@@ -94,10 +94,15 @@ waypoints or the state machine. Run only one autonomous controller per car.
 On the real car, the existing actuation manager still requires the autonomous
 deadman button (button 5 for BLUE).
 
-Edit `config/follow_the_gap_params.yaml` to configure `max_speed` (default
-1.0 m/s), `max_deceleration` (2.5 m/s²), and `minimum_gap_angle` (0.12 rad).
-The same file applies to both ego and opponent. Individual launch arguments
-override the file, and `param_file` can select a different ROS parameter YAML:
+Edit `config/follow_the_gap_params.yaml` for all standalone FTG tuning parameters.
+It includes LiDAR cropping/filtering, obstacle bubbles, gap selection, the
+distance-to-speed curve, braking, steering margin, and shutdown publications;
+each entry documents its units and constraints. The configured `max_speed` is
+4.0 m/s (direct execution without YAML retains the 1.0 m/s fallback).
+The same file applies to both ego and opponent. Parameters are read at startup;
+restart FTG after editing. The three launch arguments `max_speed`,
+`max_deceleration`, and `minimum_gap_angle` override the file, and `param_file`
+can select a different ROS parameter YAML:
 
 ```shell
 ros2 launch stack_master ftg_launch.xml racecar_version:=BLUE sim_opp:=false \
@@ -106,6 +111,19 @@ ros2 launch stack_master ftg_launch.xml racecar_version:=BLUE sim_opp:=false \
 
 Steering calibration is loaded from `config/<racecar_version>/vesc.yaml` before
 the FTG parameter file; the `SIM` configuration uses the node's steering defaults.
+The FTG YAML lists optional calibration overrides as comments so that it does
+not replace the selected vehicle's calibration. Topics use ROS remappings.
+
+Speed uses the processed front beam (default index 540); set
+`front_distance_index: -1` to locate the forward beam from `LaserScan` geometry.
+The historical `max_distance: 3.5` clip is below `speed_far_distance: 4.0`, so
+the far-speed branch is unreachable until one of those settings is changed.
+Braking limits the desired speed, while the command deceleration limiter can
+temporarily retain a higher speed as the car slows down.
+
+The historical `controller_manager` FTG implementation has its own configuration
+in `controller/config/legacy_ftg.yaml`, loaded by `controller_launch.xml` through
+`ftg_param_file`. It does not affect standalone `ftg_launch.xml`.
 
 ### Head to Head
 ```shell

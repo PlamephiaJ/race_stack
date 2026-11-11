@@ -25,7 +25,7 @@ from frenet_conversion.frenet_converter import FrenetConverter
 from controller.map import MAP_Controller
 from controller.pp import PP_Controller
 from controller.ftg import FTG_Controller
-from controller.tracking_safety import RecoverySpeedLimiter, front_speed_limit, path_tracking_errors, time_to_collision
+from controller.tracking_safety import RecoverySpeedLimiter, SpeedSmoother, collision_speed_limit, freshness_scale, path_tracking_errors
 from rcl_interfaces.msg import ParameterValue, ParameterType, ParameterDescriptor, FloatingPointRange, IntegerRange
 from tf_transformations import quaternion_from_euler
 from stack_master.parameter_event_handler import ParameterEventHandler
@@ -82,9 +82,7 @@ class Controller(Node):
         self.last_scan_stamp_ns = None
         self.scan = None
         self.last_safe_steer = 0.0
-        self.front_stop_latched = False
         self.front_speed_cap = 0.0
-        self.front_ttc = float('inf')
         self.applied_speed = None
         self.last_applied_time = None
         self.last_applied_stamp_ns = None
@@ -93,43 +91,31 @@ class Controller(Node):
             self.declare_parameter('max_input_age_sec', 0.5)
         if not self.has_parameter('max_odom_age_sec'):
             self.declare_parameter('max_odom_age_sec', 0.3)
-        if not self.has_parameter('max_path_start_rear_m'):
-            self.declare_parameter('max_path_start_rear_m', 0.75)
         if not self.has_parameter('front_guard_enabled'):
             self.declare_parameter('front_guard_enabled', True)
         if not self.has_parameter('front_clearance_m'):
             self.declare_parameter('front_clearance_m', 0.30)
-        if not self.has_parameter('front_decel_mps2'):
-            self.declare_parameter('front_decel_mps2', 0.8)
-        if not self.has_parameter('front_ttc_stop_sec'):
-            self.declare_parameter('front_ttc_stop_sec', 1.0)
-        if not self.has_parameter('front_ttc_release_sec'):
-            self.declare_parameter('front_ttc_release_sec', 1.2)
-        if not self.has_parameter('front_speed_margin'):
-            self.declare_parameter('front_speed_margin', 0.8)
+        for name, default in (('collision_speed_gain', 0.8),
+                              ('speed_accel_mps2', 1.0), ('speed_decel_mps2', 1.0)):
+            if not self.has_parameter(name):
+                self.declare_parameter(name, default)
         if not self.has_parameter('require_applied_feedback'):
             # The gym consumes /drive directly and has no actuator feedback stream.
             self.declare_parameter('require_applied_feedback', not self.sim)
         self.max_input_age_sec = float(self.get_parameter('max_input_age_sec').value)
         self.max_odom_age_sec = float(self.get_parameter('max_odom_age_sec').value)
-        self.max_path_start_rear_m = float(self.get_parameter('max_path_start_rear_m').value)
         self.front_guard_enabled = bool(self.get_parameter('front_guard_enabled').value)
         self.front_clearance_m = float(self.get_parameter('front_clearance_m').value)
-        self.front_decel_mps2 = float(self.get_parameter('front_decel_mps2').value)
-        self.front_ttc_stop_sec = float(self.get_parameter('front_ttc_stop_sec').value)
-        self.front_ttc_release_sec = float(self.get_parameter('front_ttc_release_sec').value)
-        self.front_speed_margin = float(self.get_parameter('front_speed_margin').value)
+        self.collision_speed_gain = float(self.get_parameter('collision_speed_gain').value)
+        self.speed_smoother = SpeedSmoother(
+            float(self.get_parameter('speed_accel_mps2').value),
+            float(self.get_parameter('speed_decel_mps2').value))
         self.require_applied_feedback = bool(self.get_parameter('require_applied_feedback').value)
         safety_values = (self.max_input_age_sec, self.max_odom_age_sec,
-                         self.max_path_start_rear_m, self.front_clearance_m,
-                         self.front_decel_mps2, self.front_ttc_stop_sec, self.front_ttc_release_sec,
-                         self.front_speed_margin)
+                         self.front_clearance_m, self.collision_speed_gain)
         if (not all(math.isfinite(v) for v in safety_values)
                 or self.max_input_age_sec <= 0 or self.max_odom_age_sec <= 0
-                or self.max_path_start_rear_m < 0 or self.front_clearance_m <= 0
-                or self.front_decel_mps2 <= 0 or self.front_ttc_stop_sec <= 0
-                or self.front_ttc_release_sec <= self.front_ttc_stop_sec
-                or not 0 < self.front_speed_margin < 1):
+                or self.front_clearance_m <= 0 or self.collision_speed_gain <= 0):
             raise ValueError('Invalid controller input or front clearance limit')
 
         recovery_defaults = {
@@ -390,14 +376,15 @@ class Controller(Node):
             self.wheelbase)
 
     def init_ftg_controller(self):
-
-        # TODO fix to work without alternative value
-        self.state_machine_debug = get_remote_parameter(self, 'state_machine', 'debug')
-        self.state_machine_safety_radius = get_remote_parameter(self, 'state_machine', 'safety_radius')
-        self.state_machine_max_lidar_dist = get_remote_parameter(self, 'state_machine', 'max_lidar_dist')
-        self.state_machine_max_speed = get_remote_parameter(self, 'state_machine', 'max_speed')
-        self.state_machine_range_offset = get_remote_parameter(self, 'state_machine', 'range_offset')
-        self.state_machine_track_width = get_remote_parameter(self, 'state_machine', 'track_width')
+        # Optional local overrides preserve the historical state-machine source
+        # for the six original parameters when no override is supplied.
+        tuning = {name: param.value for name, param in
+                  self.get_parameters_by_prefix('legacy_ftg').items()}
+        for name in ('debug', 'safety_radius', 'max_lidar_dist', 'max_speed',
+                     'range_offset', 'track_width'):
+            value = (tuning.pop(name) if name in tuning else
+                     get_remote_parameter(self, 'state_machine', name))
+            setattr(self, f'state_machine_{name}', value)
 
         self.get_logger().info(
             f"FTG Controller parameters: {self.state_machine_debug}, {self.state_machine_safety_radius}, {self.state_machine_max_lidar_dist}, {self.state_machine_max_speed}, {self.state_machine_range_offset}, {self.state_machine_track_width}")
@@ -409,7 +396,8 @@ class Controller(Node):
             max_lidar_dist=self.state_machine_max_lidar_dist,
             max_speed=self.state_machine_max_speed,
             range_offset=self.state_machine_range_offset,
-            track_width=self.state_machine_track_width)
+            track_width=self.state_machine_track_width,
+            tuning=tuning)
 
     #############
     # CALLBACKS #
@@ -639,26 +627,8 @@ class Controller(Node):
     #############
     # MAIN LOOP #
     #############
-    def inputs_ready(self, now, check_path_start=True):
-        """Reject missing, delayed, or clearly misplaced control inputs."""
-        ros_now_ns = self.get_clock().now().nanoseconds
-        for name, received, stamp_ns, limit in (
-                ('odometry', self.last_odom_time, self.last_odom_stamp_ns,
-                 self.max_odom_age_sec),
-                ('Frenet pose', self.last_frenet_time, self.last_frenet_stamp_ns,
-                 self.max_input_age_sec),
-                ('local waypoints', self.last_waypoints_time,
-                 self.last_waypoints_stamp_ns, self.max_input_age_sec)):
-            receive_age = float('inf') if received is None else now - received
-            stamp_age = (float('inf') if stamp_ns is None else
-                         (ros_now_ns - stamp_ns) * 1e-9)
-            if receive_age > limit or abs(stamp_age) > limit:
-                self.get_logger().warning(
-                    f'[controller_manager] {name} is stale '
-                    f'(receive {receive_age:.2f}s, stamp {stamp_age:.2f}s); stopping',
-                    throttle_duration_sec=1.0)
-                return False
-
+    def inputs_ready(self, now):
+        """Check geometry; input age reduces speed continuously in a separate scale."""
         if (self.position_in_map is None or self.waypoint_array_in_map is None
                 or self.waypoint_array_in_map.ndim != 2
                 or path_tracking_errors(self.position_in_map[0], self.waypoint_array_in_map) is None
@@ -666,51 +636,35 @@ class Controller(Node):
                 or not np.isfinite(self.position_in_map_frenet).all()
                 or self.speed_now is None or not math.isfinite(self.speed_now)):
             self.get_logger().warning(
-                '[controller_manager] No usable local waypoints; stopping',
+                '[controller_manager] No usable control geometry; fading speed',
                 throttle_duration_sec=1.0)
-            return False
-
-        if check_path_start and self.path_start_too_far_behind():
             return False
         return True
 
-    def path_start_too_far_behind(self):
-        x, y, yaw = self.position_in_map[0]
-        first = self.waypoint_array_in_map[0]
-        forward = ((first[0] - x) * math.cos(yaw)
-                   + (first[1] - y) * math.sin(yaw))
-        if forward < -self.max_path_start_rear_m:
-            self.get_logger().warning(
-                f'[controller_manager] Local path starts {abs(forward):.2f} m behind car; stopping',
-                throttle_duration_sec=1.0)
-            return True
-        return False
-
-    def front_obstacle_stop(self, now):
-        """Update a continuous approach-speed cap plus an emergency stop latch."""
-        if not self.front_guard_enabled:
-            self.front_speed_cap = float('inf')
-            return False
-        self.front_speed_cap = 0.0
+    def input_speed_scale(self, now):
+        """Age-related loss of confidence is a ramp, not a zero-command switch."""
         ros_now_ns = self.get_clock().now().nanoseconds
-        if self.require_applied_feedback and (
-                self.applied_speed is None or not math.isfinite(self.applied_speed)
-                or self.last_applied_time is None or self.last_applied_stamp_ns is None
-                or now - self.last_applied_time > self.max_odom_age_sec
-                or abs(ros_now_ns - self.last_applied_stamp_ns) * 1e-9 > self.max_odom_age_sec):
-            self.get_logger().warning(
-                '[controller_manager] Applied command feedback is stale; stopping',
-                throttle_duration_sec=1.0)
-            return True
-        if (self.scan is None or self.last_scan_time is None
-                or self.last_scan_stamp_ns is None
-                or now - self.last_scan_time > self.max_input_age_sec
-                or abs(ros_now_ns - self.last_scan_stamp_ns) * 1e-9 > self.max_input_age_sec):
-            self.get_logger().warning(
-                '[controller_manager] Front scan is stale; stopping',
-                throttle_duration_sec=1.0)
-            return True
+        streams = [
+            (self.last_odom_time, self.last_odom_stamp_ns, self.max_odom_age_sec),
+            (self.last_frenet_time, self.last_frenet_stamp_ns, self.max_input_age_sec),
+            (self.last_waypoints_time, self.last_waypoints_stamp_ns, self.max_input_age_sec)]
+        if self.front_guard_enabled:
+            streams.append((self.last_scan_time, self.last_scan_stamp_ns, self.max_input_age_sec))
+            if self.require_applied_feedback:
+                streams.append((self.last_applied_time, self.last_applied_stamp_ns, self.max_odom_age_sec))
+        scales = []
+        for received, stamp_ns, limit in streams:
+            age = (float('inf') if received is None or stamp_ns is None else
+                   max(now - received, abs(ros_now_ns - stamp_ns) * 1e-9))
+            scales.append(freshness_scale(age, limit))
+        return min(scales)
 
+    def front_collision_speed(self, now):
+        """Return only a linear distance-speed cap; there is no stop latch."""
+        if not self.front_guard_enabled:
+            return float('inf')
+        if self.scan is None or self.last_scan_stamp_ns is None or self.last_scan_time is None:
+            return 0.0
         scan = self.scan
         front = sorted(
             distance for index, distance in enumerate(scan.ranges)
@@ -718,62 +672,49 @@ class Controller(Node):
             and math.isfinite(distance)
             and scan.range_min <= distance <= scan.range_max)
         if not front:
-            self.get_logger().warning(
-                '[controller_manager] No valid front scan beams; stopping',
-                throttle_duration_sec=1.0)
-            return True
-
-        distance = front[min(3, len(front) - 1)]
-        scan_age = max(0.0, (ros_now_ns - self.last_scan_stamp_ns) * 1e-9,
+            return 0.0
+        scan_age = max(0.0, (self.get_clock().now().nanoseconds - self.last_scan_stamp_ns) * 1e-9,
                        now - self.last_scan_time)
-        self.front_speed_cap = front_speed_limit(
-            distance, self.front_clearance_m, self.front_ttc_stop_sec,
-            scan_age, self.front_decel_mps2, self.front_speed_margin)
-        self.front_ttc = time_to_collision(distance, self.speed_now, scan_age)
-        if self.front_ttc < self.front_ttc_stop_sec:
-            self.front_stop_latched = True
-        elif self.front_ttc > self.front_ttc_release_sec:
-            # Release when TTC recovers, without requiring a full physical stop.
-            self.front_stop_latched = False
-        if self.front_stop_latched:
-            self.get_logger().warning(
-                f'[controller_manager] Front obstacle {distance:.2f}m '
-                f'(TTC {self.front_ttc:.2f}s, stop < {self.front_ttc_stop_sec:.2f}s); stopping',
-                throttle_duration_sec=1.0)
-        return self.front_stop_latched
+        return collision_speed_limit(front[min(3, len(front) - 1)], self.speed_now,
+                                     scan_age, self.front_clearance_m, self.collision_speed_gain)
 
     def control_loop(self):
         now = time.monotonic()
         if self.mode in ("MAP", "PP"):
             dt = now - self.last_control_time
             self.last_control_time = now
-            if not self.inputs_ready(now, check_path_start=False):
-                # Reacquisition after an input outage also starts at low speed.
+            scale = self.input_speed_scale(now)
+            self.front_speed_cap = (
+                self.front_collision_speed(now)
+                if self.speed_now is not None and math.isfinite(self.speed_now) else 0.0)
+            if not self.inputs_ready(now) or scale <= 0.0:
                 self.recovery_limiter.limit(0.0, None, dt)
-                speed, steer = 0.0, self.last_safe_steer
+                target, steer = 0.0, self.last_safe_steer
             else:
-                braking = self.front_obstacle_stop(now) or self.path_start_too_far_behind()
                 x, y, yaw = self.position_in_map[0]
                 points = self.waypoint_array_in_map[:, :2]
                 ahead = ((points[:, 0] - x) * math.cos(yaw)
                          + (points[:, 1] - y) * math.sin(yaw))
-                if not np.any(ahead > 0.05) or (braking and abs(self.speed_now) < 0.05):
-                    speed, steer = 0.0, self.last_safe_steer
+                if not np.any(ahead > 0.05):
+                    target, steer = 0.0, self.last_safe_steer
                 elif self.mode == "MAP":
-                    speed, steer = self.map_cycle(braking=braking)
+                    slowing = self.front_speed_cap < self.speed_now or scale < 1.0
+                    target, steer = self.map_cycle(braking=slowing)
                 else:
-                    speed, steer = self.pp_cycle()
-                speed = self.recovery_limiter.limit(
-                    speed, path_tracking_errors(self.position_in_map[0], points), dt)
-                # Limit acceleration before the stop envelope is crossed. Without
-                # this, releasing a stop simply accelerates into the same stop again.
-                speed = min(speed, self.front_speed_cap)
-                if braking:
-                    speed = 0.0
-                if math.isfinite(speed) and math.isfinite(steer):
+                    target, steer = self.pp_cycle()
+                target = self.recovery_limiter.limit(
+                    target, path_tracking_errors(self.position_in_map[0], points), dt)
+                target = min(target, self.front_speed_cap) * scale
+                if math.isfinite(target) and math.isfinite(steer):
                     self.last_safe_steer = steer
                 else:
-                    speed, steer = 0.0, self.last_safe_steer
+                    target, steer = 0.0, self.last_safe_steer
+            # Every autonomous target, including missing inputs and zero targets,
+            # passes through the same continuous reference. No safety branch can
+            # replace the published command with a sudden zero-speed message.
+            applied = (self.applied_speed if self.last_applied_time is not None
+                       and now - self.last_applied_time <= self.max_odom_age_sec else None)
+            speed = self.speed_smoother.update(target, dt, applied)
         elif self.mode == "FTG":
             speed, steer = self.ftg_cycle()
 
